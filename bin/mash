@@ -782,7 +782,7 @@ display_reldir() {
   fi
 }
 
-# Echoes the user-facing display string for a repository's pinned / tracked
+# Echoes the user-facing display string for a repository's pinned/tracked
 # state. Pinned repos (`ref_kind=commit`) read as `pinned: <short>`; others
 # read as `<ref_kind>: <ref>, <short>`.
 fmt_ref_display() {
@@ -1071,8 +1071,8 @@ install_symlink_safe() {
   ln -sfn "$source" "$target"
 }
 
-# Prompts the user for the client's TOC interface version (Vanilla / TBC /
-# WotLK / custom) and echoes the chosen integer.
+# Prompts the user for the client's TOC interface version
+# (Vanilla/TBC/WotLK/custom) and echoes the chosen integer.
 prompt_interface_version() {
   local choice version
   printf 'Pick the client TOC interface version:\n' >&2
@@ -1952,11 +1952,10 @@ cmd_refresh() {
     die "$conflict"
   fi
 
-  # Apply changes. Track removed / repointed / installed for rollback on
-  # mid-step failure. `repointed_*` captures the pre-overwrite source of any
-  # existing mash-managed symlink we are about to overwrite (same name,
-  # different relative directory) so we can restore it if a later install
-  # fails.
+  # Apply changes. Track removed/repointed/installed for rollback on mid-step
+  # failure. `repointed_*` captures the pre-overwrite source of any existing
+  # mash-managed symlink we are about to overwrite (same name, different
+  # relative directory) so we can restore it if a later install fails.
   local removed_done=() removed_done_sources=()
   local repointed_targets=() repointed_sources=()
   local installed_done=()
@@ -2159,7 +2158,7 @@ repository count as installable addons.
 
 $(c_bold OPTIONS)
   $(c_hint --profile) <$(c_dim name)>         new profile name (default: $(c_bold default))
-  $(c_hint --interface) <$(c_dim version)>    interface version or shortcut ($(c_bold vanilla)/$(c_bold tbc)/$(c_bold wotlk))
+  $(c_hint --interface) <$(c_dim version)>    interface version or shortcut ($(c_bold vanilla) / $(c_bold tbc) / $(c_bold wotlk))
 EOF
       ;;
     use)
