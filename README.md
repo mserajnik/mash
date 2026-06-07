@@ -391,7 +391,7 @@ You are welcome to help out!
 
 This project follows the [REUSE specification][reuse-spec].
 
-[^1]: Would this be faster in a proper language like Go, with parallel Git
+[^1]: Would this be nicer in a proper language like Go, with parallel Git
     fetches and prebuilt binaries shipped via GitHub Actions? Probably. But if
     Bash is good enough for [`pass`][pass], it is certainly good enough for an
     addon manager for a 20+ year-old game.
