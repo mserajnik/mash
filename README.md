@@ -67,18 +67,37 @@ mash offers a range of features that simplify managing WoW addons:
 ### Via Homebrew (recommended)
 
 A HEAD-only Homebrew formula is included in this repository. Tap it first, then
-install the formula:
+install the formula via its fully qualified name:
 
 ```sh
 brew tap mserajnik/mash https://github.com/mserajnik/mash
-brew install --HEAD mash
+brew install --HEAD mserajnik/mash/mash
 ```
+
+Since Homebrew 6.0.0, formulae from non-official taps must be explicitly
+[trusted][homebrew-tap-trust] before Homebrew loads them. Installing via the
+fully qualified name trusts the formula automatically; if you installed before
+Homebrew 6.0.0, trust it once with `brew trust --formula mserajnik/mash/mash`.
 
 To update later:
 
 ```sh
 brew upgrade --fetch-HEAD mash
 ```
+
+Alternatively, when using [Homebrew Bundle][homebrew-bundle], add the tap and
+the formula to your `Brewfile`:
+
+```ruby
+tap "mserajnik/mash", "https://github.com/mserajnik/mash"
+brew "mserajnik/mash/mash", args: ["HEAD"], trusted: true
+```
+
+Since the tap is not hosted under the conventional `homebrew-<name>` repository
+naming, the clone URL must be given explicitly; the fully qualified formula
+name `mserajnik/mash/mash` then installs mash from that tap, and
+`trusted: true` grants it the required trust. Updating works the same as above;
+`brew bundle` alone does not fetch new `HEAD` commits.
 
 ### Manual
 
@@ -400,6 +419,8 @@ This project follows the [REUSE specification][reuse-spec].
 [addon-pfquest]: https://github.com/shagu/pfquest
 [badge-lint-status]: https://github.com/mserajnik/mash/actions/workflows/lint.yaml/badge.svg
 [badge-lint-status-url]: https://github.com/mserajnik/mash/actions/workflows/lint.yaml
+[homebrew-bundle]: https://docs.brew.sh/Brew-Bundle-and-Brewfile
+[homebrew-tap-trust]: https://docs.brew.sh/Tap-Trust
 [issues]: https://github.com/mserajnik/mash/issues
 [license-agpl-3.0-or-later]: LICENSES/AGPL-3.0-or-later.txt
 [license-cc-by-sa-4.0]: LICENSES/CC-BY-SA-4.0.txt
