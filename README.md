@@ -120,7 +120,7 @@ git -C ~/mash pull
 
 ### Core concepts
 
-A WoW _addon_ is a directory under `Interface/AddOns` that contains a `.toc`
+A WoW _addon_ is a directory under `Interface/AddOns/` that contains a `.toc`
 ("table of contents") file alongside the addon's Lua code and XML files. The
 `.toc` file name matches the directory name, and its `## Interface:` directive
 declares which client version the addon targets.
@@ -128,7 +128,7 @@ declares which client version the addon targets.
 Any Git repository that contains one or more such directories is, in mash's
 terminology, an _addon repository_. mash clones the repository, finds the
 `.toc` files whose interface version matches your configured one, and symlinks
-the matching addon directories into `Interface/AddOns`.
+the matching addon directories into `Interface/AddOns/`.
 
 In flag names and messages you will see `.toc` referenced explicitly (for
 example, `--toc`, "multiple matching `.toc` files") because that is what mash
@@ -158,7 +158,7 @@ The most common repository structures are covered:
 mash init <client-directory> # Path to the client directory.
 ```
 
-`mash init` validates the client directory, creates `Interface/AddOns` if it
+`mash init` validates the client directory, creates `Interface/AddOns/` if it
 does not already exist, prompts for the TOC interface version your client
 expects (defaults are listed; you can also type a custom version or shortcut),
 and creates a configuration profile set as active.

@@ -1101,7 +1101,7 @@ prompt_interface_version() {
 }
 
 # Handles `mash init <client-directory> [--profile <name>] [--interface
-# <version>]`: validates the client directory, creates `Interface/AddOns` if
+# <version>]`: validates the client directory, creates `Interface/AddOns/` if
 # missing, resolves the interface version (from the flag or via the interactive
 # prompt), writes the initial `[main]` configuration section to the named
 # profile, and sets that profile as active.
@@ -1269,7 +1269,7 @@ cmd_profile() {
 # Handles `mash add <repository> [<ref>] [--toc <name>]`: normalizes the
 # repository identifier, resolves `ref` and `ref_kind` (branch, tag, or pinned
 # commit), clones into the data directory, detects matching addons by `.toc`,
-# installs symlinks into the client's `Interface/AddOns`, and records the
+# installs symlinks into the client's `Interface/AddOns/`, and records the
 # result in a `[repo:<name>]` configuration section. Rolls back the clone and
 # any partially-installed symlinks on failure.
 cmd_add() {
