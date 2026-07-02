@@ -17,18 +17,18 @@ or lacking features I need. Bash runs everywhere I care about out-of-the-box.[^1
 
 mash offers a range of features that simplify managing WoW addons:
 
-- __Multiple independent profiles:__ manage multiple client installations side
+- __Multiple independent profiles__: manage multiple client installations side
   by side (for example, Vanilla and TBC), each with its own configuration and
   installed addons.
-- __Support for all common repository layouts:__ a single addon at the root,
+- __Support for all common repository layouts__: a single addon at the root,
   addons in subdirectories, or multiple `.toc` per directory; see the
   _[Core concepts](#core-concepts)_ section for details.
-- __Preview updates before applying:__ see which tracked repositories have
+- __Preview updates before applying__: see which tracked repositories have
   updates available upstream without touching the working state.
-- __Pinning:__ freeze a repository at a specific commit so updates skip it,
+- __Pinning__: freeze a repository at a specific commit so updates skip it,
   useful for sticking to a known-good version when an addon's latest commit is
   broken or when newer commits target different interface versions.
-- __Batch installation:__ add many repositories at once from a list file or
+- __Batch installation__: add many repositories at once from a list file or
   from stdin (for piping from `curl` and similar).
 
 ## Table of contents
