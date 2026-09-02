@@ -13,7 +13,8 @@ clients where addons are primarily distributed via Git repositories. Existing
 addon managers are either cumbersome to install on some systems (a
 language-specific package manager or runtime just for a single program is
 bloat, and on atomic distros like SteamOS or Bazzite often not easily feasible)
-or lacking features I need. Bash runs everywhere I care about out-of-the-box.[^1]
+or lacking features I need. Bash runs everywhere I care about
+out-of-the-box.[^1]
 
 mash offers a range of features that simplify managing WoW addons:
 
@@ -95,9 +96,9 @@ brew "mserajnik/mash/mash", args: ["HEAD"], trusted: true
 
 Since the tap is not hosted under the conventional `homebrew-<name>` repository
 naming, the clone URL must be given explicitly; the fully qualified formula
-name `mserajnik/mash/mash` then installs mash from that tap, and
-`trusted: true` grants it the required trust. Updating works the same as above;
-`brew bundle` alone does not fetch new `HEAD` commits.
+name `mserajnik/mash/mash` then installs mash from that tap, and `trusted:
+true` grants it the required trust. Updating works the same as above; `brew
+bundle` alone does not fetch new `HEAD` commits.
 
 ### Manual
 
@@ -262,8 +263,8 @@ mash unpin DennisWG/BetterAlign # Unpin and switch to the origin's default branc
 mash unpin shagu/pfQuest master # Unpin and switch to a specific branch or tag.
 ```
 
-`mash pin` freezes a repository at a specific commit so subsequent
-`mash update` runs skip it. With no commit argument, it freezes at the clone's
+`mash pin` freezes a repository at a specific commit so subsequent `mash
+update` runs skip it. With no commit argument, it freezes at the clone's
 current `HEAD`; with a commit argument, it checks out that commit first
 (fetching from upstream if it is not in the local clone yet) and then freezes.
 A repeat pin against the same already-pinned commit is a no-op success.
