@@ -838,7 +838,8 @@ scan_addons() {
 
   # Group by directory, then shallowest-wins prune. Sort directories by path
   # depth ascending so shorter prefixes appear first; iterate keeping only
-  # those whose ancestor isn't already kept.
+  # those whose ancestor is not already kept. The root `.` has depth 0, so
+  # every other location is below it and is dropped.
   local groups_file
   groups_file="$(mash_mktemp)" || return 1
   sort_names "$tocs_file" | awk -F'\t' '
@@ -849,8 +850,11 @@ scan_addons() {
       for (d in tocs) print d "\t" tocs[d]
     }
   ' | awk -F'\t' '
-    { n = split($1, parts, "/"); printf "%d\t%s\t%s\n", n, $1, $2 }
-  ' | sort -k1,1n >"$groups_file"
+    {
+      n = ($1 == "." ? 0 : split($1, parts, "/"))
+      printf "%d\t%s\t%s\n", n, $1, $2
+    }
+  ' | LC_ALL=C sort -t $'\t' -k1,1n -k2,2f >"$groups_file"
 
   local kept_file
   kept_file="$(mash_mktemp)" || return 1
