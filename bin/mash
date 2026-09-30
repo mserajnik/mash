@@ -826,7 +826,7 @@ scan_addons() {
   while IFS= read -r -d '' toc_path; do
     iface="$(toc_interface "$toc_path")"
     if [[ "$iface" == "$want_version" ]]; then
-      reldir="$(dirname "${toc_path#"$clone_dir"/}")"
+      reldir="$(dirname -- "${toc_path#"$clone_dir"/}")"
       base="$(basename "$toc_path" .toc)"
       printf '%s\t%s\n' "$reldir" "$base" >>"$tocs_file"
     fi
@@ -918,7 +918,7 @@ scan_addons_unfiltered() {
   while IFS= read -r -d '' toc_path; do
     iface="$(toc_interface "$toc_path")"
     [[ -z "$iface" ]] && iface="?"
-    reldir="$(dirname "${toc_path#"$clone_dir"/}")"
+    reldir="$(dirname -- "${toc_path#"$clone_dir"/}")"
     base="$(basename "$toc_path" .toc)"
     printf '%s\t%s\t%s\n' "$reldir" "$base" "$iface"
   done < <(find "$clone_dir" -type f -name '*.toc' ! -path '*/.git/*' -print0) |
