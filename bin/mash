@@ -370,7 +370,8 @@ parse_interface_version() {
 
 # All access goes through these helpers; they read/write the file from disk
 # each call. The overhead is negligible in practice, and this avoids stale
-# in-memory state.
+# in-memory state. mash passes values to awk through `ENVIRON`, never `awk -v`,
+# which would process backslash escapes in them.
 
 # Prints the value of a key in a section. Empty output and non-zero exit if the
 # key is missing.
@@ -378,7 +379,11 @@ config_get() {
   local section="$1"
   local key="$2"
   [[ -f "$CONFIG_PATH" ]] || return 1
-  awk -v section="$section" -v key="$key" '
+  MASH_SECTION="$section" MASH_KEY="$key" awk '
+    BEGIN {
+      section = ENVIRON["MASH_SECTION"]
+      key = ENVIRON["MASH_KEY"]
+    }
     /^\[.*\]$/ {
       current = substr($0, 2, length($0) - 2)
       next
@@ -412,10 +417,10 @@ require_repo() {
 config_section_exists() {
   local section="$1"
   [[ -f "$CONFIG_PATH" ]] || return 1
-  awk -v section="$section" '
+  MASH_SECTION="$section" awk '
     /^\[.*\]$/ {
       current = substr($0, 2, length($0) - 2)
-      if (current == section) { found = 1; exit }
+      if (current == ENVIRON["MASH_SECTION"]) { found = 1; exit }
     }
     END { if (!found) exit 1 }
   ' "$CONFIG_PATH"
