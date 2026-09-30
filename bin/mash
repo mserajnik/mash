@@ -106,17 +106,27 @@ mash_mktemp() {
   printf '%s\n' "$f"
 }
 
-# A clone directory that `cmd_add` set but has not yet finalized; if the script
-# dies before the success path clears it, the `EXIT` trap removes it.
+# A clone directory not yet recorded in the configuration, and its repository;
+# `cleanup_pending_clone` removes it.
 PENDING_CLONE=""
+PENDING_REPO=""
+
+# Removes the clone directory in `PENDING_CLONE`, if any, and its owner
+# directory once that is empty. Keeps a clone the configuration already
+# records, which an exit right after the configuration write would otherwise
+# delete.
+cleanup_pending_clone() {
+  if [[ -n "$PENDING_CLONE" ]] && ! config_section_exists "repo:$PENDING_REPO"; then
+    rm -rf "$PENDING_CLONE" || true
+    rmdir "$(dirname "$PENDING_CLONE")" 2>/dev/null || true
+  fi
+  PENDING_CLONE=""
+}
 
 # `EXIT` trap handler: removes any pending clone directory and every temporary
 # file recorded in `TMP_TRACKER`.
 cleanup_on_exit() {
-  if [[ -n "$PENDING_CLONE" ]]; then
-    rm -rf "$PENDING_CLONE"
-    PENDING_CLONE=""
-  fi
+  cleanup_pending_clone
   if [[ -n "$TMP_TRACKER" && -f "$TMP_TRACKER" ]]; then
     local f
     while IFS= read -r f; do
@@ -609,7 +619,8 @@ config_update_repo_metadata() {
     "ref=$ref" \
     "ref_kind=$ref_kind" \
     "pinned=$pinned" \
-    "addons=$addons_csv"
+    "addons=$addons_csv" ||
+    die "Cannot write $(c_path_display "$CONFIG_PATH")."
 }
 
 # Returns 0 if `input` is a pure `owner/repository` GitHub shorthand. URLs and
@@ -1264,7 +1275,7 @@ cmd_init() {
 
   validate_profile_name "$profile"
 
-  if [[ -d "$(config_root)/$profile" ]]; then
+  if [[ -f "$(profile_config_path "$profile")" ]]; then
     die "Profile $(c_bold "$profile") already exists. Run $(c_hint "mash drop $profile") first to re-create it."
   fi
 
@@ -1300,7 +1311,8 @@ cmd_init() {
 
   config_write_section "main" \
     "client_dir=$client_dir" \
-    "interface_version=$interface_version"
+    "interface_version=$interface_version" ||
+    die "Cannot write $(c_path_display "$CONFIG_PATH")."
 
   write_active_profile "$profile"
 
@@ -1482,22 +1494,21 @@ cmd_add() {
   if [[ -e "$clone_dir" ]]; then
     die "Clone directory $(c_path_display "$clone_dir") already exists (orphan from a previous run?). Remove it manually and retry."
   fi
+
+  # From here on, any exit must clean up the partial clone and its owner
+  # directory. The `EXIT` trap does this when `PENDING_CLONE` is set; `cmd_add`
+  # clears it once the configuration records the clone.
+  PENDING_CLONE="$clone_dir"
+  PENDING_REPO="$name"
   mkdir -p "$(dirname "$clone_dir")" ||
     die "Cannot create $(c_path_display "$(dirname "$clone_dir")")."
   ensure_writable "$(dirname "$clone_dir")"
-
   log_info "Cloning $(c_repo "$name") from $(c_url "$url")..."
   if ! run_git_clone "$url" "$clone_dir"; then
-    rm -rf "$clone_dir"
     die "Failed to clone $(c_url "$url")."
   fi
-  # From here on, any unhandled exit must clean up the partial clone. The
-  # `EXIT` trap does this when `PENDING_CLONE` is set; the success path at the
-  # end of `cmd_add` clears it.
-  PENDING_CLONE="$clone_dir"
 
   if ! run_git_reset_hard "$clone_dir" "$(resolve_checkout_ref "$ref" "$ref_kind")"; then
-    rm -rf "$clone_dir"
     die "Failed to switch to $ref_kind $(c_dim "$ref")."
   fi
 
@@ -1505,12 +1516,7 @@ cmd_add() {
   local scan_output
   scan_output="$(scan_addons "$clone_dir" "$interface_version")"
   if [[ -z "$scan_output" ]]; then
-    # Capture the unfiltered listing before tearing down the clone so the error
-    # can show what `.toc` files are actually there.
-    local err
-    err="$(fmt_no_matching_toc_error "$clone_dir" "$name" "$interface_version")"
-    rm -rf "$clone_dir"
-    die "$err"
+    die "$(fmt_no_matching_toc_error "$clone_dir" "$name" "$interface_version")"
   fi
 
   # Resolve each addon location to a single `.toc` choice and the target
@@ -1536,35 +1542,10 @@ cmd_add() {
   # system.
   local i conflict
   if ! conflict="$(detect_target_conflict "${chosen_targets[@]}")"; then
-    rm -rf "$clone_dir"
     die "$conflict"
   fi
 
-  # Install symlinks. If any step fails, roll back the symlinks already
-  # installed in this loop and remove the clone so the next attempt starts from
-  # a clean slate.
-  local installed=()
-  local install_failed=0
-  for ((i = 0; i < ${#chosen_targets[@]}; i++)); do
-    if install_symlink_safe "${chosen_sources[$i]}" "${chosen_targets[$i]}"; then
-      installed+=("${chosen_targets[$i]}")
-    else
-      install_failed=1
-      break
-    fi
-  done
-  if [[ "$install_failed" -eq 1 ]]; then
-    local rb
-    if [[ ${#installed[@]} -gt 0 ]]; then
-      for rb in "${installed[@]}"; do
-        rm -f "$rb"
-      done
-    fi
-    rm -rf "$clone_dir"
-    die "Failed to install symlinks for $(c_repo "$name") (rolled back)."
-  fi
-
-  # Persist to configuration. The `addons=` field is a comma-separated list of
+  # The `addons=` field is a comma-separated list of
   # `<target-name>:<source-reldir>` pairs (`reldir` is `.` when the addon lives
   # at the repository root).
   local addons_csv=""
@@ -1578,12 +1559,38 @@ cmd_add() {
     fi
   done
 
-  config_write_section "repo:$name" \
+  # Install symlinks, then record them in the configuration. If any step fails,
+  # roll back the symlinks installed here; the `EXIT` trap then removes the
+  # clone so the next attempt starts from a clean slate.
+  local installed=()
+  local failed=0
+  for ((i = 0; i < ${#chosen_targets[@]}; i++)); do
+    if install_symlink_safe "${chosen_sources[$i]}" "${chosen_targets[$i]}"; then
+      installed+=("${chosen_targets[$i]}")
+    else
+      failed=1
+      break
+    fi
+  done
+  if [[ "$failed" -eq 0 ]] && ! config_write_section "repo:$name" \
     "url=$url" \
     "ref=$ref" \
     "ref_kind=$ref_kind" \
     "pinned=$pinned" \
-    "addons=$addons_csv"
+    "addons=$addons_csv"; then
+    failed=1
+  fi
+  if [[ "$failed" -eq 1 ]]; then
+    local rb
+    for rb in ${installed[@]+"${installed[@]}"}; do
+      rm -f "$rb"
+    done
+    die "Failed to install $(c_repo "$name") (rolled back)."
+  fi
+
+  # The configuration now records the clone, so clear the trap's rollback hook:
+  # no later exit (a closed stdout, for example) may delete the clone.
+  PENDING_CLONE=""
 
   local short
   short="$(git_short_head "$clone_dir")"
@@ -1593,10 +1600,6 @@ cmd_add() {
   for ((i = 0; i < ${#chosen_targets[@]}; i++)); do
     log_info "  $(c_addon "${chosen_tocs[$i]}") -> $(c_path_display "${chosen_sources[$i]}")"
   done
-
-  # The clone is now fully wired up to configuration and symlinks; clear the
-  # trap's rollback hook so a normal exit does not delete it.
-  PENDING_CLONE=""
 }
 
 # Handles `mash add --file <file>` (batch add). Reads one entry per line from
@@ -1617,7 +1620,7 @@ cmd_add_batch() {
 
   local n_added=0 n_skipped=0 n_failed=0
   local line line_no=0
-  local entry_args first_arg repo_name
+  local entry_args first_arg repo_name rc signalled
 
   while IFS= read -r line; do
     line_no=$((line_no + 1))
@@ -1649,9 +1652,36 @@ cmd_add_batch() {
     fi
 
     # Invoke `cmd_add` for this entry in a subshell so a `die` aborts only this
-    # entry rather than the whole batch. `cmd_add` cleans up any partial clone
-    # before each `die`, so no extra teardown is needed here.
-    if (cmd_add "${entry_args[@]}"); then
+    # entry rather than the whole batch. The subshell does not inherit the
+    # `EXIT` trap, so it sets its own to remove a partial clone. Bash 3.2 skips
+    # that trap on SIGTERM and SIGHUP, so this shell also marks the clone the
+    # entry may create as pending and cleans it up afterwards; the
+    # recorded-clone guard in `cleanup_pending_clone` keeps a clone the entry
+    # recorded. A SIGTERM or SIGHUP sent to this shell alone takes effect only
+    # after the subshell exits. The cleanup then never deletes a clone the
+    # entry still uses. Bash ignores `set -e` inside a command tested by `if`
+    # or `||`, which would let a failing `$(...)` in `cmd_add` carry on, so run
+    # the subshell as a plain command with `set -e` re-enabled inside it.
+    if [[ ! -e "$(clone_path "$repo_name")" ]]; then
+      PENDING_CLONE="$(clone_path "$repo_name")"
+      PENDING_REPO="$repo_name"
+    fi
+    signalled=0
+    trap 'signalled=143' TERM
+    trap 'signalled=129' HUP
+    set +e
+    (
+      trap - TERM HUP
+      trap cleanup_pending_clone EXIT
+      set -e
+      cmd_add "${entry_args[@]}"
+    )
+    rc=$?
+    set -e
+    trap - TERM HUP
+    cleanup_pending_clone
+    [[ "$signalled" -eq 0 ]] || exit "$signalled"
+    if [[ "$rc" -eq 0 ]]; then
       n_added=$((n_added + 1))
     else
       n_failed=$((n_failed + 1))
@@ -2110,6 +2140,25 @@ cmd_refresh() {
     done
   fi
 
+  local addons_csv="" pair
+  for ((i = 0; i < ${#new_tocs[@]}; i++)); do
+    pair="${new_tocs[$i]}:${new_reldirs[$i]}"
+    if [[ -z "$addons_csv" ]]; then
+      addons_csv="$pair"
+    else
+      addons_csv="$addons_csv,$pair"
+    fi
+  done
+
+  if [[ "$rollback" -eq 0 ]] && ! config_write_section "$section" \
+    "url=$url" \
+    "ref=$ref" \
+    "ref_kind=$ref_kind" \
+    "pinned=$pinned" \
+    "addons=$addons_csv"; then
+    rollback=1
+  fi
+
   if [[ "$rollback" -eq 1 ]]; then
     local rb
     for rb in ${installed_done[@]+"${installed_done[@]}"}; do
@@ -2121,25 +2170,8 @@ cmd_refresh() {
     for ((i = 0; i < ${#removed_done[@]}; i++)); do
       ln -sfn "${removed_done_sources[$i]}" "${removed_done[$i]}"
     done
-    die "Failed to refresh symlinks for $(c_repo "$name") (rolled back)."
+    die "Failed to refresh $(c_repo "$name") (rolled back)."
   fi
-
-  local addons_csv="" pair
-  for ((i = 0; i < ${#new_tocs[@]}; i++)); do
-    pair="${new_tocs[$i]}:${new_reldirs[$i]}"
-    if [[ -z "$addons_csv" ]]; then
-      addons_csv="$pair"
-    else
-      addons_csv="$addons_csv,$pair"
-    fi
-  done
-
-  config_write_section "$section" \
-    "url=$url" \
-    "ref=$ref" \
-    "ref_kind=$ref_kind" \
-    "pinned=$pinned" \
-    "addons=$addons_csv"
 
   # Detect whether the symlink set actually changed; the "no changes" carve-out
   # is useful when the user ran `refresh` defensively, or when only
@@ -2252,7 +2284,8 @@ cmd_remove() {
   # Clean up empty owner directory; harmless if siblings remain.
   rmdir "$(dirname "$clone_dir")" 2>/dev/null || true
 
-  config_remove_section "$section"
+  config_remove_section "$section" ||
+    die "Cannot write $(c_path_display "$CONFIG_PATH")."
 
   log_info "$(c_status Removed) $(c_repo "$name")."
 }
