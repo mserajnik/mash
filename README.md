@@ -322,14 +322,15 @@ mash list
 ```
 
 `mash list` prints each tracked repository with its tracked ref, current
-commit, and its addons. Pinned repositories show `pinned: <commit-hash>` in
-place of the ref:
+commit, and its addons, in case-insensitive order. Pinned repositories show
+`pinned: <commit-hash>` in place of the ref:
 
 ```
-shagu/pfQuest (branch: master, abc1234).
-  pfQuest -> ~/.local/share/mash/default/clones/shagu/pfQuest
 DennisWG/BetterAlign (pinned: 8840ee2).
   BetterAlign -> ~/.local/share/mash/default/clones/DennisWG/BetterAlign
+
+shagu/pfQuest (branch: master, abc1234).
+  pfQuest -> ~/.local/share/mash/default/clones/shagu/pfQuest
 ```
 
 ### Removing addon repositories
@@ -362,19 +363,19 @@ Each profile's configuration lives at
 client_dir=/path/to/wow-client
 interface_version=11200
 
-[repo:shagu/pfQuest]
-url=https://github.com/shagu/pfQuest.git
-ref=master
-ref_kind=branch
-pinned=false
-addons=pfQuest:.
-
 [repo:DennisWG/BetterAlign]
 url=https://github.com/DennisWG/BetterAlign.git
 ref=8840ee2dad218d73e5ae8b23979f552f3c2c56cd
 ref_kind=commit
 pinned=true
 addons=BetterAlign:.
+
+[repo:shagu/pfQuest]
+url=https://github.com/shagu/pfQuest.git
+ref=master
+ref_kind=branch
+pinned=false
+addons=pfQuest:.
 ```
 
 `ref_kind` is one of `branch`, `tag`, or `commit`. `addons` is a
@@ -382,10 +383,11 @@ comma-separated list of `<name>:<reldir>` pairs, where `<name>` is the addon
 directory name (the chosen `.toc` basename) and `<reldir>` is the addon's
 directory inside the clone (`.` for the repository root).
 
-mash rewrites the file on every `init`, `add`, `pin`, `unpin`, `update`,
-`refresh`, and `remove`. You can edit it by hand for one-off changes (e.g.,
-switch a repository to track a different branch), but the easier path is
-usually to use `mash remove` and re-add.
+mash keeps the repository sections in alphabetical order whenever it rewrites
+the file. A comment (a line starting with `;` or `#`) moves with the line below
+it. You can edit it by hand for one-off changes (e.g., switch a repository to
+track a different branch), but the easier path is usually to use `mash remove`
+and re-add.
 
 The persistent clone cache for each profile lives at
 `${XDG_DATA_HOME:-~/.local/share}/mash/<profile>/clones`.

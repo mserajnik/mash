@@ -90,13 +90,18 @@ die() {
 # back to the parent. Writing the paths to a real file works regardless.
 TMP_TRACKER=""
 
-# Creates a temporary file via `mktemp`, registers it in `TMP_TRACKER` for the
-# `EXIT` trap to clean up, and echoes its path.
+# Creates a temporary file via `mktemp`, in `<dir>` when given, registers it in
+# `TMP_TRACKER` for the `EXIT` trap to clean up, and echoes its path.
 mash_mktemp() {
   [[ -n "$TMP_TRACKER" ]] ||
     die "'TMP_TRACKER' not initialized (internal invariant)."
   local f
-  f="$(mktemp)"
+  if [[ $# -gt 0 ]]; then
+    f="$(mktemp "$1/.mash.XXXXXX" 2>/dev/null)" ||
+      die "Cannot create a temporary file in $(c_path_display "$1")."
+  else
+    f="$(mktemp 2>/dev/null)" || die "Cannot create a temporary file."
+  fi
   printf '%s\n' "$f" >>"$TMP_TRACKER"
   printf '%s\n' "$f"
 }
@@ -242,19 +247,17 @@ read_active_profile() {
 # Atomically writes a profile name to the state file for the active profile.
 # Writes to a sibling temporary file in `config_root` and `mv`s into place so
 # the state file is never left half-written. The temporary path is registered
-# in `TMP_TRACKER` so a signal between `mktemp` and `mv` does not leave a stray
-# `active.XXXXXX` behind.
+# in `TMP_TRACKER` so a signal between `mktemp` and `mv` does not leave a
+# temporary file behind.
 write_active_profile() {
   local name="$1"
   local dir file tmp
   dir="$(config_root)"
   file="$(active_profile_file)"
   mkdir -p "$dir" || die "Cannot create $(c_path_display "$dir")."
-  tmp="$(mktemp "$dir/active.XXXXXX")" ||
-    die "Cannot create temporary file in $(c_path_display "$dir")."
-  printf '%s\n' "$tmp" >>"$TMP_TRACKER"
+  tmp="$(mash_mktemp "$dir")" || exit 1
   printf '%s\n' "$name" >"$tmp"
-  mv "$tmp" "$file" || {
+  mv -f "$tmp" "$file" || {
     rm -f "$tmp"
     die "Cannot write to $(c_path_display "$file")."
   }
@@ -275,7 +278,7 @@ list_profiles() {
     if [[ -f "$dir/$name/config.ini" ]]; then
       printf '%s\n' "$name"
     fi
-  done | sort
+  done | sort_names
 }
 
 # Resolves the paths for the active profile into `CONFIG_PATH` and `DATA_DIR`.
@@ -418,7 +421,9 @@ config_section_exists() {
   ' "$CONFIG_PATH"
 }
 
-# Lists every `[repo:*]` section name (the `repo:` prefix is stripped).
+# Lists every `[repo:*]` section name (the `repo:` prefix is stripped), sorted
+# with `sort_names`. The file is kept in that order too, but a hand-edited file
+# may not be.
 config_list_repos() {
   [[ -f "$CONFIG_PATH" ]] || return 0
   awk '
@@ -426,68 +431,164 @@ config_list_repos() {
       name = substr($0, 7, length($0) - 7)
       print name
     }
-  ' "$CONFIG_PATH"
+  ' "$CONFIG_PATH" | sort_names
 }
 
-# Writes `$CONFIG_PATH` minus the named section (and its `<key>=<value>` lines)
-# to `<out>`. Trims trailing blank lines so callers can append a fresh section
-# preceded by a single blank line regardless of the input's prior shape.
-# Produces an empty file when `$CONFIG_PATH` does not exist.
-_config_strip_section() {
-  local section="$1"
-  local out="$2"
-  if [[ -f "$CONFIG_PATH" ]]; then
-    awk -v section="$section" '
-      BEGIN { skip = 0; count = 0 }
-      /^\[.*\]$/ {
-        if (substr($0, 2, length($0) - 2) == section) { skip = 1; next }
-        skip = 0
+# Writes `$CONFIG_PATH` to `<out>` with the section `<section>` replaced by one
+# built from the `<key>=<value>` lines after the first three arguments, or,
+# with `<mode>` `remove`, without that section. A comment line (first non-blank
+# character `;` or `#`) belongs to the next line that is not a comment or
+# blank, or to the end of the file when none follows. So comments above the
+# section's header and above each key it keeps survive the rewrite, and
+# comments above a key it drops go with that key. Reads an absent
+# `$CONFIG_PATH` as empty.
+_config_rewrite_section() {
+  local section="$1" mode="$2" out="$3"
+  shift 3
+  local src="$CONFIG_PATH" entries="" entry
+  [[ -f "$src" ]] || src=/dev/null
+  for entry in "$@"; do
+    entries="$entries$entry"$'\n'
+  done
+  MASH_SECTION="$section" MASH_MODE="$mode" MASH_ENTRIES="$entries" awk '
+    BEGIN {
+      section = ENVIRON["MASH_SECTION"]
+      n = split(ENVIRON["MASH_ENTRIES"], entry, "\n") - 1
+    }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*[;#]/ { pending = pending $0 "\n"; next }
+    /^\[.*\]$/ {
+      in_section = (substr($0, 2, length($0) - 2) == section)
+      if (in_section) {
+        header_comments = header_comments pending
+        pending = ""
+        next
       }
-      !skip { lines[++count] = $0 }
-      END {
-        while (count > 0 && lines[count] == "") count--
-        for (i = 1; i <= count; i++) print lines[i]
+    }
+    in_section {
+      key = $0
+      sub(/=.*/, "", key)
+      key_comments[key] = key_comments[key] pending
+      pending = ""
+      next
+    }
+    {
+      printf "%s", pending
+      pending = ""
+      print
+    }
+    END {
+      if (ENVIRON["MASH_MODE"] != "remove") {
+        printf "%s", header_comments
+        print "[" section "]"
+        for (i = 1; i <= n; i++) {
+          key = entry[i]
+          sub(/=.*/, "", key)
+          printf "%s", key_comments[key]
+          print entry[i]
+        }
       }
-    ' "$CONFIG_PATH" >"$out"
-  else
-    : >"$out"
+      printf "%s", pending
+    }
+  ' "$src" >"$out"
+}
+
+# Rewrites the configuration file `<file>` in place with its sections in
+# canonical order: any lines before the first header, then `[main]`, then the
+# `[repo:*]` sections sorted by repository name as `sort_names` sorts, then any
+# other section, then any comments at the end of the file. Sections whose names
+# are equal keep their order in the file. Comments move with the line they
+# belong to (see `_config_rewrite_section`). Blank lines are dropped and one
+# blank line separates each section. Awk has no portable sort, so each section
+# is packed onto one line (a sort key, its position, then its lines, joined by
+# `\001`) for `sort` and unpacked afterwards.
+_config_sort_sections() {
+  local file="$1"
+  local sorted
+  sorted="$(mash_mktemp "$(dirname "$file")")" || return 1
+  if ! awk '
+    function flush() {
+      if (body != "") print key "\001" (++position) "\001" body
+      body = ""
+    }
+    function add(line) {
+      body = (body == "" ? line : body "\001" line)
+    }
+    BEGIN { key = "0" }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*[;#]/ {
+      pending = (pending == "" ? $0 : pending "\001" $0)
+      next
+    }
+    /^\[.*\]$/ {
+      flush()
+      name = substr($0, 2, length($0) - 2)
+      if (name == "main") key = "1"
+      else if (index(name, "repo:") == 1) key = "2" substr(name, 6)
+      else key = "3" name
+    }
+    {
+      if (pending != "") add(pending)
+      pending = ""
+      add($0)
+    }
+    END {
+      flush()
+      if (pending != "") {
+        key = "4"
+        body = pending
+        flush()
+      }
+    }
+  ' "$file" | LC_ALL=C sort -t $'\001' -k1,1f -k1,1 -k2,2n | awk '
+    BEGIN { FS = "\001" }
+    NR > 1 { print "" }
+    { for (i = 3; i <= NF; i++) print $i }
+  ' >"$sorted"; then
+    rm -f "$sorted"
+    return 1
   fi
+  mv -f "$sorted" "$file" || {
+    rm -f "$sorted"
+    return 1
+  }
+}
+
+# Rewrites `$CONFIG_PATH` with `_config_rewrite_section` (same arguments, minus
+# `<out>`) and `_config_sort_sections`. Builds the new file next to the old one
+# so the final `mv` is a rename on one file system, which leaves either the old
+# file or the new one in place, never a partial file. Returns non-zero without
+# touching the file when any step fails.
+_config_replace_section() {
+  local section="$1" mode="$2"
+  shift 2
+  local dir tmp
+  dir="$(dirname "$CONFIG_PATH")"
+  mkdir -p "$dir" || return 1
+  tmp="$(mash_mktemp "$dir")" || return 1
+  if _config_rewrite_section "$section" "$mode" "$tmp" "$@" &&
+    _config_sort_sections "$tmp" &&
+    mv -f "$tmp" "$CONFIG_PATH"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
 }
 
 # Writes (creates or overwrites) a section with the provided `<key>=<value>`
-# lines.
+# lines, in the section order that `_config_sort_sections` defines. Returns
+# non-zero without touching the file when any step fails.
 config_write_section() {
   local section="$1"
   shift
-  local tmp
-  tmp="$(mash_mktemp)"
-
-  _config_strip_section "$section" "$tmp"
-
-  # If anything was preserved above, separate it from the new section with a
-  # blank line.
-  if [[ -s "$tmp" ]]; then
-    printf '\n' >>"$tmp"
-  fi
-
-  printf '[%s]\n' "$section" >>"$tmp"
-  local entry
-  for entry in "$@"; do
-    printf '%s\n' "$entry" >>"$tmp"
-  done
-
-  mkdir -p "$(dirname "$CONFIG_PATH")"
-  mv "$tmp" "$CONFIG_PATH"
+  _config_replace_section "$section" write "$@"
 }
 
 # Removes a section (and its `<key>=<value>` lines) from the configuration.
+# Returns non-zero without touching the file when any step fails.
 config_remove_section() {
-  local section="$1"
   [[ -f "$CONFIG_PATH" ]] || return 0
-  local tmp
-  tmp="$(mash_mktemp)"
-  _config_strip_section "$section" "$tmp"
-  mv "$tmp" "$CONFIG_PATH"
+  _config_replace_section "$1" remove
 }
 
 # Rewrites the `[repo:<name>]` section's metadata (`url`, `ref`, `ref_kind`,
@@ -612,6 +713,13 @@ to_lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# Sorts lines case-insensitively, independent of the locale. Lines that differ
+# only in case fall back to byte order, so the result is deterministic. Every
+# list mash prints (profiles, repositories, addons) goes through this.
+sort_names() {
+  LC_ALL=C sort -f "$@"
+}
+
 # Defaults to `--quiet`; on `-v` streams progress via `--progress`.
 run_git_clone() {
   local url="$1"
@@ -702,13 +810,14 @@ toc_interface() {
 
 # Scans a clone directory for addon locations whose `.toc` files match the
 # configured interface version. Emits `<reldir>\t<toc1>,<toc2>,...` lines, one
-# per addon location. Empty output means no matching addons found.
+# per addon location, sorted by `reldir` with `sort_names`. Empty output means
+# no matching addons found.
 scan_addons() {
   local clone_dir="$1"
   local want_version="$2"
 
   local tocs_file
-  tocs_file="$(mash_mktemp)"
+  tocs_file="$(mash_mktemp)" || return 1
 
   # Collect all matching `.toc` files first as `<reldir>\t<toc-basename>`. Use
   # `-print0` / `read -d ''` for paths with whitespace, even though `.toc`
@@ -731,8 +840,8 @@ scan_addons() {
   # depth ascending so shorter prefixes appear first; iterate keeping only
   # those whose ancestor isn't already kept.
   local groups_file
-  groups_file="$(mash_mktemp)"
-  sort -u "$tocs_file" | awk -F'\t' '
+  groups_file="$(mash_mktemp)" || return 1
+  sort_names "$tocs_file" | awk -F'\t' '
     {
       tocs[$1] = (tocs[$1] == "" ? $2 : tocs[$1] "," $2)
     }
@@ -744,7 +853,7 @@ scan_addons() {
   ' | sort -k1,1n >"$groups_file"
 
   local kept_file
-  kept_file="$(mash_mktemp)"
+  kept_file="$(mash_mktemp)" || return 1
   local dir tocs ancestor_match prior_dir
   while IFS=$'\t' read -r _ dir tocs; do
     ancestor_match=0
@@ -766,7 +875,7 @@ scan_addons() {
     fi
   done <"$groups_file"
 
-  cat "$kept_file"
+  sort_names "$kept_file"
 }
 
 # Renders a relative directory for user-facing prose. The distinguished `.`
@@ -809,7 +918,7 @@ scan_addons_unfiltered() {
     base="$(basename "$toc_path" .toc)"
     printf '%s\t%s\t%s\n' "$reldir" "$base" "$iface"
   done < <(find "$clone_dir" -type f -name '*.toc' ! -path '*/.git/*' -print0) |
-    sort
+    sort_names
 }
 
 # Builds the "No matching .toc" error message body for `cmd_add` and
@@ -1018,8 +1127,8 @@ addon_source_path() {
 }
 
 # Parses a repository section's `addons=` field and emits one
-# `<name>\t<reldir>` line per addon. Empty input means no addons recorded
-# (shouldn't happen after a successful add, but handled defensively).
+# `<name>\t<reldir>` line per addon, sorted by name with `sort_names`. Empty
+# input, which a successful `add` never writes, means no addons recorded.
 read_repo_addons() {
   local section="$1"
   local csv
@@ -1037,7 +1146,7 @@ read_repo_addons() {
     name="${pair%%:*}"
     reldir="${pair#*:}"
     printf '%s\t%s\n' "$name" "$reldir"
-  done
+  done | sort_names
 }
 
 # Echoes an error message ready to pass to `die` on the first target that
@@ -2292,6 +2401,7 @@ $(c_bold USAGE)
 
 Print each tracked repository with its tracked ref, current commit, and addons.
 Pinned repositories show pinned: <$(c_dim commit-hash)> in place of the ref.
+Repositories and addons are listed in case-insensitive order.
 EOF
       ;;
     remove)
