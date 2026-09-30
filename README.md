@@ -214,9 +214,9 @@ mash add DennisWG/BetterAlign 8840ee2dad218d73e5ae8b23979f552f3c2c56cd
 ```
 
 The second argument is optional. If omitted, mash tracks the repository's
-default branch. A 7-40 character lower-case hex string is treated as a commit
-hash and pins the repository. Anything else is probed at the remote as a branch
-first, then a tag.
+default branch. A 7-40 character hex string is treated as a commit hash and
+pins the repository. Anything else is probed at the remote as a branch first,
+then a tag.
 
 GitHub repositories can be referenced as `owner/repository`; other hosts need
 the full URL. The shorthand always expands to the HTTPS URL

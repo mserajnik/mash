@@ -666,16 +666,15 @@ strip_git_suffix() {
   printf '%s\n' "$s"
 }
 
-# Accepts any of:
-#   owner/repository (GitHub shorthand)
-#   https://github.com/owner/repository[.git]
-#   git@github.com:owner/repository.git
-#   https://gitea.example.com/foo/bar[.git]
-#   git@gitlab.com:foo/bar.git
 # Echoes the canonical name in `owner/repository` form (GitHub: bare
 # `owner/repository`; other hosts: last two path components, stripped of
 # `.git`). URLs with fewer than two path components after the host are
-# rejected.
+# rejected. Accepts any of:
+# - `owner/repository` (GitHub shorthand)
+# - `https://github.com/owner/repository[.git]`
+# - `git@github.com:owner/repository.git`
+# - `https://gitea.example.com/foo/bar[.git]`
+# - `git@gitlab.com:foo/bar.git`
 normalize_name() {
   local input="$1"
   if is_shorthand "$input"; then
@@ -1981,7 +1980,7 @@ cmd_pin() {
   if [[ $# -eq 2 ]]; then
     requested_sha="$2"
     if ! is_sha "$requested_sha"; then
-      die "Pin target '$requested_sha' is not a commit hash (expected 7-40 lower-case hex characters)."
+      die "Pin target '$requested_sha' is not a commit hash (expected 7-40 hex characters)."
     fi
     requested_sha="$(to_lower "$requested_sha")"
   fi
@@ -2589,7 +2588,7 @@ repository count as installable addons.
 
 $(c_bold OPTIONS)
   $(c_hint --profile) <$(c_dim name)>         new profile name (default: $(c_bold default))
-  $(c_hint --interface) <$(c_dim version)>    interface version or shortcut ($(c_bold vanilla) / $(c_bold tbc) / $(c_bold wotlk))
+  $(c_hint --interface) <$(c_dim version)>    version or shortcut ($(c_bold vanilla) / $(c_bold tbc) / $(c_bold wotlk))
 EOF
       ;;
     use)
@@ -2632,9 +2631,9 @@ file (filtered to the configured interface version), and install symlinks into
 the client's $(c_path Interface/AddOns) directory.
 
 The <$(c_dim ref)> argument is optional. If omitted, mash tracks the repository's
-default branch. A 7-40 character lower-case hex string is treated as a commit
-hash and pins the repository; anything else is probed at the remote as a branch
-first, then a tag.
+default branch. A 7-40 character hex string is treated as a commit hash and
+pins the repository; anything else is probed at the remote as a branch first,
+then a tag.
 
 The $(c_hint --toc) flag picks a .toc name when an addon directory has multiple matching
 .toc files. The $(c_hint --dir) flag picks the addon directory, relative to the
@@ -2709,8 +2708,8 @@ $(c_bold USAGE)
   $(c_hint "mash refresh") <$(c_dim repository)> [$(c_hint --toc) <$(c_dim name)>] [$(c_hint --dir) <$(c_dim addon-directory)>]
 
 Re-run addon detection against the existing clone and reconcile installed
-symlinks to match. Does not fetch, checkout, or reset; pair with $(c_hint "mash update")
-if you also need to advance the Git state.
+symlinks to match. Does not fetch, checkout, or reset; pair with $(c_hint "mash update") if
+you also need to advance the Git state.
 
 The typical use case is the layout drift that $(c_hint "mash update") refuses to handle (a
 .toc was added, removed, renamed, or moved upstream).
