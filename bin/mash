@@ -1437,6 +1437,34 @@ install_symlink_safe() {
   ln -sfn "$source" "$target"
 }
 
+# Checks the symlinks just installed in `<addons-dir>`, given as
+# `<name>\t<source>` lines. Echoes an error message ready to pass to `die` and
+# returns non-zero when a link no longer points at its source, which happens
+# when the file system treats two addon names as one (for example, names that
+# differ in case outside ASCII).
+detect_shared_target() {
+  local addons_dir="$1" installed="$2" name source link other_name other_source
+  while IFS=$'\t' read -r name source; do
+    [[ -n "$name" ]] || continue
+    link="$(readlink "$addons_dir/$name" 2>/dev/null)" || link=""
+    [[ "$link" == "$source" ]] && continue
+    other_name=""
+    while IFS=$'\t' read -r other_name other_source; do
+      [[ "$other_source" == "$link" ]] && break
+      other_name=""
+    done <<<"$installed"
+    if [[ -n "$other_name" ]]; then
+      printf 'Addons %s and %s resolve to the same path on this file system' \
+        "$(c_addon "$name")" "$(c_addon "$other_name")"
+    else
+      printf 'Symlink %s changed while mash installed it' \
+        "$(c_path_display "$addons_dir/$name")"
+    fi
+    return 1
+  done <<<"$installed"
+  return 0
+}
+
 # Prompts the user for the client's TOC interface version
 # (Vanilla/TBC/WotLK/custom) and echoes the chosen integer.
 prompt_interface_version() {
@@ -1818,16 +1846,20 @@ cmd_add() {
   # Install symlinks, then record them in the configuration. If any step fails,
   # roll back the symlinks installed here; the `EXIT` trap then removes the
   # clone so the next attempt starts from a clean slate.
-  local installed=()
-  local failed=0
+  local installed=() installed_lines=""
+  local failed=0 shared=""
   for ((i = 0; i < ${#chosen_targets[@]}; i++)); do
     if install_symlink_safe "${chosen_sources[$i]}" "${chosen_targets[$i]}"; then
       installed+=("${chosen_targets[$i]}")
+      installed_lines+="${chosen_tocs[$i]}"$'\t'"${chosen_sources[$i]}"$'\n'
     else
       failed=1
       break
     fi
   done
+  if [[ "$failed" -eq 0 ]] && ! shared="$(detect_shared_target "$addons_dir" "$installed_lines")"; then
+    failed=1
+  fi
   if [[ "$failed" -eq 0 ]] && ! config_write_section "repo:$name" \
     "url=$url" \
     "ref=$ref" \
@@ -1841,6 +1873,7 @@ cmd_add() {
     for rb in ${installed[@]+"${installed[@]}"}; do
       rm -f "$rb"
     done
+    [[ -z "$shared" ]] || die "$shared (rolled back)."
     die "Failed to install $(c_repo "$name") (rolled back)."
   fi
 
@@ -2400,22 +2433,32 @@ cmd_refresh() {
     fi
   done
 
+  local installed_lines="" shared=""
   if [[ "$rollback" -eq 0 ]]; then
+    # Preflight guaranteed any existing symlink here is mash-managed, so a bare
+    # `-L` check is enough to detect a repoint we may need to roll back. Record
+    # them all before installing any, so a target the file system shares with
+    # an earlier one is restored to its old source.
     for ((i = 0; i < ${#new_targets[@]}; i++)); do
       target="${new_targets[$i]}"
-      # Preflight guaranteed any existing symlink here is mash-managed, so a
-      # bare `-L` check is enough to detect a repoint we may need to roll back.
       if [[ -L "$target" ]]; then
         repointed_targets+=("$target")
         repointed_sources+=("$(readlink "$target")")
       fi
+    done
+    for ((i = 0; i < ${#new_targets[@]}; i++)); do
+      target="${new_targets[$i]}"
       if install_symlink_safe "${new_sources[$i]}" "$target"; then
         installed_done+=("$target")
+        installed_lines+="${new_tocs[$i]}"$'\t'"${new_sources[$i]}"$'\n'
       else
         rollback=1
         break
       fi
     done
+  fi
+  if [[ "$rollback" -eq 0 ]] && ! shared="$(detect_shared_target "$addons_dir" "$installed_lines")"; then
+    rollback=1
   fi
 
   local addons_csv="" pair
@@ -2442,12 +2485,24 @@ cmd_refresh() {
     for rb in ${installed_done[@]+"${installed_done[@]}"}; do
       rm -f "$rb"
     done
+    # Restore the recorded names first, then any other link only where the path
+    # is still free: on a file system that treats two names as one, the other
+    # name is the same entry, and writing it can rename the entry.
     for ((i = 0; i < ${#repointed_targets[@]}; i++)); do
-      ln -sfn "${repointed_sources[$i]}" "${repointed_targets[$i]}"
+      if list_contains "$(basename -- "${repointed_targets[$i]}")" ${old_tocs[@]+"${old_tocs[@]}"}; then
+        ln -sfn "${repointed_sources[$i]}" "${repointed_targets[$i]}"
+      fi
     done
     for ((i = 0; i < ${#removed_done[@]}; i++)); do
       ln -sfn "${removed_done_sources[$i]}" "${removed_done[$i]}"
     done
+    for ((i = 0; i < ${#repointed_targets[@]}; i++)); do
+      target="${repointed_targets[$i]}"
+      if [[ ! -e "$target" && ! -L "$target" ]]; then
+        ln -sfn "${repointed_sources[$i]}" "$target"
+      fi
+    done
+    [[ -z "$shared" ]] || die "$shared (rolled back)."
     die "Failed to refresh $(c_repo "$name") (rolled back)."
   fi
 
