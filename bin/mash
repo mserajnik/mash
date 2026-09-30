@@ -447,6 +447,17 @@ config_section_exists() {
   ' "$CONFIG_PATH"
 }
 
+# Echoes the recorded repository name that equals `<name>`, or else one that
+# equals it when ASCII case is ignored, or nothing. GitHub and most other hosts
+# ignore case in these names.
+config_find_repo() {
+  config_list_repos | MASH_NAME="$1" LC_ALL=C awk '
+    $0 == ENVIRON["MASH_NAME"] { exact = $0 }
+    first == "" && tolower($0) == tolower(ENVIRON["MASH_NAME"]) { first = $0 }
+    END { if (exact != "") print exact; else if (first != "") print first }
+  '
+}
+
 # Lists every `[repo:*]` section name (the `repo:` prefix is stripped), sorted
 # with `sort_names`. The file is kept in that order too, but a hand-edited file
 # may not be.
@@ -1667,8 +1678,12 @@ cmd_add() {
   name="$(normalize_name "$repo_input")"
   url="$(expand_url "$repo_input")"
 
-  if config_section_exists "repo:$name"; then
+  local recorded_as
+  recorded_as="$(config_find_repo "$name")"
+  if [[ "$recorded_as" == "$name" ]]; then
     die "$(c_repo "$name") is already added. Run $(c_hint "mash update") to apply available updates. To re-add from scratch, run $(c_hint "mash remove") first."
+  elif [[ -n "$recorded_as" ]]; then
+    die "$(c_repo "$name") is already added as $(c_repo "$recorded_as")."
   fi
 
   # Resolve `ref` and `ref_kind`.
@@ -1832,7 +1847,7 @@ cmd_add_batch() {
 
   local n_added=0 n_skipped=0 n_failed=0
   local line line_no=0
-  local entry_args first_arg repo_name rc signalled
+  local entry_args first_arg repo_name recorded_as rc signalled
 
   while IFS= read -r line; do
     line_no=$((line_no + 1))
@@ -1857,8 +1872,13 @@ cmd_add_batch() {
       continue
     fi
 
-    if config_section_exists "repo:$repo_name"; then
-      log_info "$(c_status Skipped) $(c_repo "$repo_name") (already added)."
+    recorded_as="$(config_find_repo "$repo_name")"
+    if [[ -n "$recorded_as" ]]; then
+      if [[ "$recorded_as" == "$repo_name" ]]; then
+        log_info "$(c_status Skipped) $(c_repo "$repo_name") (already added)."
+      else
+        log_info "$(c_status Skipped) $(c_repo "$repo_name") (already added as $(c_repo "$recorded_as"))."
+      fi
       n_skipped=$((n_skipped + 1))
       continue
     fi
