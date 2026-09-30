@@ -737,7 +737,7 @@ is_sha() {
 
 # Lowercases a string via `tr` (Bash 3.2 lacks `${var,,}`).
 to_lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
 }
 
 # Sorts lines case-insensitively, independent of the locale. Lines that differ
@@ -745,6 +745,28 @@ to_lower() {
 # list mash prints (profiles, repositories, addons) goes through this.
 sort_names() {
   LC_ALL=C sort -f "$@"
+}
+
+# Returns 0 if the first argument equals any of the remaining arguments.
+list_contains() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# Echoes the arguments after the first joined with `, `, each rendered through
+# the function named by the first argument (for example, `c_addon`).
+fmt_list() {
+  local render="$1" out="" item
+  shift
+  for item in "$@"; do
+    [[ -n "$out" ]] && out="$out, "
+    out="$out$("$render" "$item")"
+  done
+  printf '%s\n' "$out"
 }
 
 # Defaults to `--quiet`; on `-v` streams progress via `--progress`.
@@ -1005,69 +1027,179 @@ fmt_no_matching_toc_error() {
   done <<<"$unfiltered"
 }
 
-# Given an addon location with one or more matching `.toc` names, picks which
-# `.toc` basename to use as the symlink target. Inputs: the directory (for
-# display), comma-separated candidate names, and the user's `--toc` override
-# (may be empty). Returns the chosen `.toc` basename on stdout.
-select_toc() {
-  local dir="$1"
-  local candidates_csv="$2"
-  local requested="$3"
+# Returns 0 when mash can prompt: stdin and stderr (where prompts go) are both
+# terminals. Stdout is not checked because the pickers run inside `$(...)`.
+can_prompt() {
+  [[ -t 0 && -t 2 ]]
+}
 
-  local IFS_save="$IFS"
-  IFS=','
-  # shellcheck disable=SC2206
-  local candidates=($candidates_csv)
-  IFS="$IFS_save"
-
-  local candidates_pretty="" c
-  for c in "${candidates[@]}"; do
-    if [[ -n "$candidates_pretty" ]]; then
-      candidates_pretty="$candidates_pretty, "
-    fi
-    candidates_pretty="$candidates_pretty$(c_addon "$c")"
-  done
-
-  if [[ "${#candidates[@]}" -eq 1 ]]; then
-    if [[ -n "$requested" && "$requested" != "${candidates[0]}" ]]; then
-      die "$(c_hint "--toc") value '$requested' did not match the candidate in $(display_reldir "$dir") (candidate: $candidates_pretty)."
-    fi
-    printf '%s\n' "${candidates[0]}"
+# Picks one of the candidates after the first five arguments and echoes it.
+# When there is one candidate, it wins. Otherwise the first of these that names
+# a candidate wins: `<requested>` (a `--toc` or `--dir` value), `<recorded>`
+# (the choice an earlier `add` or `refresh` recorded), and an interactive
+# prompt. Without a terminal to prompt on, dies with `<subject>` and a hint to
+# pass `<hint>`. `<render>` names the function that styles each candidate (for
+# example, `c_addon`).
+pick_choice() {
+  local subject="$1" hint="$2" render="$3" requested="$4" recorded="$5"
+  shift 5
+  if [[ $# -eq 1 ]]; then
+    printf '%s\n' "$1"
     return 0
   fi
+  local choice
+  for choice in "$requested" "$recorded"; do
+    if [[ -n "$choice" ]] && list_contains "$choice" "$@"; then
+      printf '%s\n' "$choice"
+      return 0
+    fi
+  done
 
-  if [[ -n "$requested" ]]; then
-    local c
-    for c in "${candidates[@]}"; do
-      if [[ "$c" == "$requested" ]]; then
-        printf '%s\n' "$c"
-        return 0
-      fi
-    done
-    die "$(c_hint "--toc") value '$requested' did not match any candidate in $(display_reldir "$dir") (candidates: $candidates_pretty)."
+  if ! can_prompt; then
+    die "$subject. Pass $(c_hint "$hint") (candidates: $(fmt_list "$render" "$@"))."
   fi
 
-  if [[ ! -t 0 || ! -t 1 ]]; then
-    die "Multiple matching .toc files in $(display_reldir "$dir"). Pass $(c_hint "--toc <name>") (candidates: $candidates_pretty)."
-  fi
-
-  printf '%s\n' "Multiple matching .toc files in $(display_reldir "$dir"):" >&2
-  local i=1
-  local c
-  for c in "${candidates[@]}"; do
-    printf '  %d) %s\n' "$i" "$(c_addon "$c")" >&2
+  printf '%s\n' "$subject:" >&2
+  local i=1 candidate
+  for candidate in "$@"; do
+    printf '  %d) %s\n' "$i" "$("$render" "$candidate")" >&2
     i=$((i + 1))
   done
   printf 'Pick one (or empty to abort): ' >&2
-  local choice
-  read -r choice
+  choice=""
+  if ! read -r choice; then
+    printf '\n' >&2
+  fi
   if [[ -z "$choice" ]]; then
     die "Aborted."
   fi
-  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "${#candidates[@]}" ]]; then
+  if ! [[ "$choice" =~ ^[1-9][0-9]{0,8}$ ]] || [[ "$choice" -gt $# ]]; then
     die "Invalid choice '$choice'."
   fi
+  local candidates=("$@")
   printf '%s\n' "${candidates[$((choice - 1))]}"
+}
+
+# Looks up an earlier choice in `<recorded>` (`<name>\t<reldir>` lines from
+# `read_repo_addons`): echoes the other field of the one line whose field
+# number `<field>` equals `<value>`, ignoring case for names (field 1). Echoes
+# nothing when no line or several lines match, so a configuration that recorded
+# a name twice prompts again.
+recorded_choice() {
+  printf '%s\n' "$1" | MASH_FIELD="$2" MASH_VALUE="$3" LC_ALL=C awk -F'\t' '
+    BEGIN {
+      field = ENVIRON["MASH_FIELD"]
+      value = ENVIRON["MASH_VALUE"]
+      if (field == 1) value = tolower(value)
+    }
+    # Append "" so that directories such as `1` and `01` compare as strings.
+    (field == 1 ? tolower($1) : $2 "") == value {
+      n++
+      other = (field == 1 ? $2 : $1)
+    }
+    END { if (n == 1) print other }
+  '
+}
+
+# Resolves `scan_addons` output to the addons to install and echoes them as
+# `<name>\t<reldir>` lines, sorted by name. First picks one `.toc` name per
+# location, then one location per name where several locations picked the same
+# name, ignoring case (only one can own the symlink, and the client and some
+# file systems ignore case). `<requested_toc>` and `<requested_dir>` are the
+# `--toc` and `--dir` values: each must match a candidate somewhere and applies
+# only where there is a choice to make. `<recorded>` holds the configuration's
+# current `<name>\t<reldir>` lines (empty for `add`), so `refresh` reuses
+# recorded choices.
+resolve_addons() {
+  local scan_output="$1" requested_toc="$2" requested_dir="$3" recorded="$4"
+  local typed_dir="$requested_dir"
+
+  # Accept `a/Foo/` and `./a/Foo` for `a/Foo`.
+  while [[ "$requested_dir" == ?*/ ]]; do
+    requested_dir="${requested_dir%/}"
+  done
+  while [[ "$requested_dir" == ./?* ]]; do
+    requested_dir="${requested_dir#./}"
+  done
+
+  # Read the scan up front: the prompts in `pick_choice` read the answer from
+  # stdin, so no loop around them may redirect it. This function runs inside
+  # `$(...)`, where `set -e` is off. Each pick exits explicitly when
+  # `pick_choice` dies.
+  local dirs=() tocs_csv=() dir csv
+  while IFS=$'\t' read -r dir csv; do
+    [[ -z "$dir" ]] && continue
+    dirs+=("$dir")
+    tocs_csv+=("$csv")
+  done <<<"$scan_output"
+
+  local i j name options=() all_tocs=()
+  for ((i = 0; i < ${#dirs[@]}; i++)); do
+    IFS=',' read -r -a options <<<"${tocs_csv[$i]}"
+    all_tocs+=("${options[@]}")
+  done
+
+  if [[ -n "$requested_toc" ]] && ! list_contains "$requested_toc" "${all_tocs[@]}"; then
+    local shown=()
+    while IFS= read -r name; do
+      shown+=("$name")
+    done < <(printf '%s\n' "${all_tocs[@]}" | sort_names | uniq)
+    die "$(c_hint --toc) value '$requested_toc' did not match any .toc file (candidates: $(fmt_list c_addon "${shown[@]}"))."
+  fi
+  if [[ -n "$requested_dir" ]] && ! list_contains "$requested_dir" "${dirs[@]}"; then
+    die "$(c_hint --dir) value '$typed_dir' did not match any addon directory (candidates: $(fmt_list display_reldir "${dirs[@]}"))."
+  fi
+
+  local names=() folded=()
+  for ((i = 0; i < ${#dirs[@]}; i++)); do
+    IFS=',' read -r -a options <<<"${tocs_csv[$i]}"
+    name="$(pick_choice \
+      "Multiple matching .toc files in $(display_reldir "${dirs[$i]}")" \
+      "--toc <name>" c_addon "$requested_toc" \
+      "$(recorded_choice "$recorded" 2 "${dirs[$i]}")" \
+      "${options[@]}")" || exit 1
+    names+=("$name")
+    folded+=("$(to_lower "$name")")
+  done
+
+  local picked=() group=() prior seen
+  for ((i = 0; i < ${#names[@]}; i++)); do
+    seen=0
+    for ((j = 0; j < i; j++)); do
+      if [[ "${folded[$j]}" == "${folded[$i]}" ]]; then
+        seen=1
+        break
+      fi
+    done
+    [[ "$seen" -eq 1 ]] && continue
+    group=()
+    for ((j = i; j < ${#names[@]}; j++)); do
+      if [[ "${folded[$j]}" == "${folded[$i]}" ]]; then
+        group+=("${dirs[$j]}")
+      fi
+    done
+    # A recorded directory settles the collision unless another directory in
+    # the group has a recorded line of its own; then the collision is new (a
+    # `--toc` value can create one).
+    prior="$(recorded_choice "$recorded" 1 "${names[$i]}")"
+    for dir in "${group[@]}"; do
+      if [[ "$dir" != "$prior" && -n "$(recorded_choice "$recorded" 2 "$dir")" ]]; then
+        prior=""
+      fi
+    done
+    dir="$(pick_choice \
+      "Multiple directories provide $(c_addon "${names[$i]}")" \
+      "--dir <addon-directory>" display_reldir "$requested_dir" "$prior" \
+      "${group[@]}")" || exit 1
+    for ((j = i; j < ${#names[@]}; j++)); do
+      if [[ "${dirs[$j]}" == "$dir" ]]; then
+        picked+=("${names[$j]}"$'\t'"$dir")
+        break
+      fi
+    done
+  done
+
+  printf '%s\n' "${picked[@]}" | sort_names
 }
 
 # Echoes the first 7 chars of the commit hash at `HEAD` for a clone.
@@ -1206,6 +1338,52 @@ detect_target_conflict() {
     fi
   done
   return 0
+}
+
+# Echoes an error message ready to pass to `die` on an addon in `<resolved>`
+# (`<name>\t<reldir>` lines) that another repository in the configuration
+# already provides, ignoring case, and returns non-zero. Echoes nothing and
+# returns 0 if no other repository provides any of them. `<self>` is the
+# repository being added or refreshed.
+detect_owner_conflict() {
+  local self="$1" resolved="$2"
+  [[ -f "$CONFIG_PATH" && -n "$resolved" ]] || return 0
+  # In one pass over the configuration, read the new names (folded to lower
+  # case) from `<resolved>`, then check every other repository's `addons=`
+  # entries.
+  local hit other new_name
+  hit="$(printf '%s\n' "$resolved" | MASH_SELF="$self" LC_ALL=C awk '
+    NR == FNR {
+      split($0, field, "\t")
+      if (field[1] != "") wanted[tolower(field[1])] = field[1]
+      next
+    }
+    /^\[.*\]$/ {
+      section = substr($0, 2, length($0) - 2)
+      repo = (index(section, "repo:") == 1 ? substr(section, 6) : "")
+      next
+    }
+    repo != "" && repo != ENVIRON["MASH_SELF"] && index($0, "addons=") == 1 {
+      n = split(substr($0, 8), pairs, ",")
+      for (i = 1; i <= n; i++) {
+        owned = pairs[i]
+        sub(/:.*/, "", owned)
+        if (tolower(owned) in wanted) {
+          print wanted[tolower(owned)] "\t" repo
+          exit
+        }
+      }
+    }
+  ' - "$CONFIG_PATH")" || {
+    printf 'Cannot read %s.' "$(c_path_display "$CONFIG_PATH")"
+    return 1
+  }
+  [[ -n "$hit" ]] || return 0
+  IFS=$'\t' read -r new_name other <<<"$hit"
+  printf 'Addon %s is already provided by %s. To install it from %s, run %s first.' \
+    "$(c_addon "$new_name")" "$(c_repo "$other")" "$(c_repo "$self")" \
+    "$(c_hint "mash remove $other")"
+  return 1
 }
 
 # Creates or replaces a symlink. Returns non-zero if the target exists but is
@@ -1416,14 +1594,16 @@ cmd_profile() {
   done <<<"$profiles"
 }
 
-# Handles `mash add <repository> [<ref>] [--toc <name>]`: normalizes the
-# repository identifier, resolves `ref` and `ref_kind` (branch, tag, or pinned
-# commit), clones into the data directory, detects matching addons by `.toc`,
-# installs symlinks into the client's `Interface/AddOns/`, and records the
-# result in a `[repo:<name>]` configuration section. Rolls back the clone and
-# any partially-installed symlinks on failure.
+# Handles `mash add <repository> [<ref>] [--toc <name>] [--dir
+# <addon-directory>]`: normalizes the repository identifier, resolves `ref` and
+# `ref_kind` (branch, tag, or pinned commit), clones into the data directory,
+# detects matching addons by `.toc`, installs symlinks into the client's
+# `Interface/AddOns/`, and records the result in a `[repo:<name>]`
+# configuration section. Rolls back the clone and any partially-installed
+# symlinks on failure.
 cmd_add() {
   local requested_toc=""
+  local requested_dir=""
   local batch_file=""
   local positional=()
   while [[ $# -gt 0 ]]; do
@@ -1435,6 +1615,15 @@ cmd_add() {
         ;;
       --toc=*)
         requested_toc="${1#--toc=}"
+        shift
+        ;;
+      --dir)
+        require_arg --dir "$#"
+        requested_dir="$2"
+        shift 2
+        ;;
+      --dir=*)
+        requested_dir="${1#--dir=}"
         shift
         ;;
       --file)
@@ -1457,15 +1646,15 @@ cmd_add() {
   done
 
   if [[ -n "$batch_file" ]]; then
-    if [[ ${#positional[@]} -gt 0 || -n "$requested_toc" ]]; then
-      die "$(c_hint "--file") is mutually exclusive with positional arguments and $(c_hint "--toc")."
+    if [[ ${#positional[@]} -gt 0 || -n "$requested_toc" || -n "$requested_dir" ]]; then
+      die "$(c_hint "--file") is mutually exclusive with positional arguments, $(c_hint "--toc"), and $(c_hint "--dir")."
     fi
     cmd_add_batch "$batch_file"
     return $?
   fi
 
   if [[ ${#positional[@]} -lt 1 || ${#positional[@]} -gt 2 ]]; then
-    die "Usage: $(c_hint 'mash add <repository> [<ref>] [--toc <name>] | --file <file>')"
+    die "Usage: $(c_hint 'mash add <repository> [<ref>] [--toc <name>] [--dir <addon-directory>] | --file <file>')"
   fi
 
   local repo_input="${positional[0]}"
@@ -1539,28 +1728,32 @@ cmd_add() {
     die "$(fmt_no_matching_toc_error "$clone_dir" "$name" "$interface_version")"
   fi
 
-  # Resolve each addon location to a single `.toc` choice and the target
-  # directory. Collect chosen `.toc` names, their source `reldir` (relative to
-  # clone), and the absolute target path for symlink creation.
+  # Resolve the addons to one `.toc` name and one location each, then collect
+  # the chosen names, their source `reldir` (relative to clone), and the
+  # absolute target path for symlink creation.
+  local resolved
+  resolved="$(resolve_addons "$scan_output" "$requested_toc" "$requested_dir" "")"
   local chosen_tocs=()
   local chosen_reldirs=()
   local chosen_sources=()
   local chosen_targets=()
-  local reldir candidates_csv chosen_toc source target
-  while IFS=$'\t' read -r reldir candidates_csv; do
-    [[ -z "$reldir" ]] && continue
-    chosen_toc="$(select_toc "$reldir" "$candidates_csv" "$requested_toc")"
+  local reldir chosen_toc source target
+  while IFS=$'\t' read -r chosen_toc reldir; do
+    [[ -z "$chosen_toc" ]] && continue
     source="$(addon_source_path "$clone_dir" "$reldir")"
     target="$addons_dir/$chosen_toc"
     chosen_tocs+=("$chosen_toc")
     chosen_reldirs+=("$reldir")
     chosen_sources+=("$source")
     chosen_targets+=("$target")
-  done <<<"$scan_output"
+  done <<<"$resolved"
 
-  # Preflight: confirm no symlink target conflict before mutating the file
-  # system.
+  # Preflight: confirm no addon is owned by another repository and no symlink
+  # target conflicts before mutating the file system.
   local i conflict
+  if ! conflict="$(detect_owner_conflict "$name" "$resolved")"; then
+    die "$conflict"
+  fi
   if ! conflict="$(detect_target_conflict "${chosen_targets[@]}")"; then
     die "$conflict"
   fi
@@ -1623,13 +1816,12 @@ cmd_add() {
 }
 
 # Handles `mash add --file <file>` (batch add). Reads one entry per line from
-# `<file>` (or stdin when `<file>` is `-`). Each line has the shape of a
-# positional `mash add` invocation: `<repository> [<ref>] [--toc <name>]`.
-# Blank lines and lines starting with `#` are skipped. Each entry runs in a
-# subshell so a `die` inside the per-entry `cmd_add` aborts only that entry,
-# not the whole batch. Repositories that are already added are skipped with a
-# log line. Emits a summary at the end and returns non-zero if any entry
-# failed.
+# `<file>` (or stdin when `<file>` is `-`). Each line contains the arguments of
+# a positional `mash add` invocation. Blank lines and lines starting with `#`
+# are skipped. Each entry runs in a subshell so a `die` inside the per-entry
+# `cmd_add` aborts only that entry, not the whole batch. Repositories that are
+# already added are skipped with a log line. Emits a summary at the end and
+# returns non-zero if any entry failed.
 cmd_add_batch() {
   local file="$1"
   if [[ "$file" == "-" ]]; then
@@ -2018,14 +2210,15 @@ cmd_update() {
   fi
 }
 
-# Handles `mash refresh <repository> [--toc <name>]`: re-detects addons in the
-# existing clone and reconciles symlinks to match. Does not fetch, checkout, or
-# reset. The recovery path for the "addon layout changed upstream" error that
-# `mash update` emits when a `.toc` was added, removed, renamed, or moved. On
-# any failure mid-step, rolls back the symlink changes made in this invocation
-# and exits non-zero.
+# Handles `mash refresh <repository> [--toc <name>] [--dir <addon-directory>]`:
+# re-detects addons in the existing clone and reconciles symlinks to match.
+# Does not fetch, checkout, or reset. The recovery path for the "addon layout
+# changed upstream" error that `mash update` emits when a `.toc` was added,
+# removed, renamed, or moved. On any failure mid-step, rolls back the symlink
+# changes made in this invocation and exits non-zero.
 cmd_refresh() {
   local requested_toc=""
+  local requested_dir=""
   local positional=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2036,6 +2229,15 @@ cmd_refresh() {
         ;;
       --toc=*)
         requested_toc="${1#--toc=}"
+        shift
+        ;;
+      --dir)
+        require_arg --dir "$#"
+        requested_dir="$2"
+        shift 2
+        ;;
+      --dir=*)
+        requested_dir="${1#--dir=}"
         shift
         ;;
       -*)
@@ -2049,7 +2251,7 @@ cmd_refresh() {
   done
 
   if [[ ${#positional[@]} -ne 1 ]]; then
-    die "Usage: $(c_hint 'mash refresh <repository> [--toc <name>]')"
+    die "Usage: $(c_hint 'mash refresh <repository> [--toc <name>] [--dir <addon-directory>]')"
   fi
 
   local name
@@ -2077,18 +2279,8 @@ cmd_refresh() {
     die "$(fmt_no_matching_toc_error "$clone_dir" "$name" "$interface_version")"
   fi
 
-  local new_tocs=() new_reldirs=() new_sources=() new_targets=()
-  local reldir candidates_csv chosen_toc source target
-  while IFS=$'\t' read -r reldir candidates_csv; do
-    [[ -z "$reldir" ]] && continue
-    chosen_toc="$(select_toc "$reldir" "$candidates_csv" "$requested_toc")"
-    source="$(addon_source_path "$clone_dir" "$reldir")"
-    target="$addons_dir/$chosen_toc"
-    new_tocs+=("$chosen_toc")
-    new_reldirs+=("$reldir")
-    new_sources+=("$source")
-    new_targets+=("$target")
-  done <<<"$scan_output"
+  local recorded
+  recorded="$(read_repo_addons "$section")"
 
   local old_tocs=() old_reldirs=()
   local addon_name addon_reldir
@@ -2096,7 +2288,21 @@ cmd_refresh() {
     [[ -z "$addon_name" ]] && continue
     old_tocs+=("$addon_name")
     old_reldirs+=("$addon_reldir")
-  done < <(read_repo_addons "$section")
+  done <<<"$recorded"
+
+  local resolved
+  resolved="$(resolve_addons "$scan_output" "$requested_toc" "$requested_dir" "$recorded")"
+  local new_tocs=() new_reldirs=() new_sources=() new_targets=()
+  local reldir chosen_toc source target
+  while IFS=$'\t' read -r chosen_toc reldir; do
+    [[ -z "$chosen_toc" ]] && continue
+    source="$(addon_source_path "$clone_dir" "$reldir")"
+    target="$addons_dir/$chosen_toc"
+    new_tocs+=("$chosen_toc")
+    new_reldirs+=("$reldir")
+    new_sources+=("$source")
+    new_targets+=("$target")
+  done <<<"$resolved"
 
   # Removed addons: in the old set, not in the new set.
   local removed_targets=()
@@ -2114,8 +2320,12 @@ cmd_refresh() {
     fi
   done
 
-  # Preflight: refuse if any new target path is occupied by a non-mash file.
+  # Preflight: refuse if another repository provides any of the new addons, or
+  # if any new target path is occupied by a non-mash file.
   local conflict
+  if ! conflict="$(detect_owner_conflict "$name" "$resolved")"; then
+    die "$conflict"
+  fi
   if ! conflict="$(detect_target_conflict "${new_targets[@]}")"; then
     die "$conflict"
   fi
@@ -2364,7 +2574,7 @@ EOF
     add)
       cat <<EOF
 $(c_bold USAGE)
-  $(c_hint "mash add") <$(c_dim repository)> [<$(c_dim ref)>] [$(c_hint --toc) <$(c_dim name)>]
+  $(c_hint "mash add") <$(c_dim repository)> [<$(c_dim ref)>] [$(c_hint --toc) <$(c_dim name)>] [$(c_hint --dir) <$(c_dim addon-directory)>]
   $(c_hint "mash add") $(c_hint --file) <$(c_dim file)>
 
 Clone an addon repository into the per-profile cache, detect addons by .toc
@@ -2376,8 +2586,10 @@ default branch. A 7-40 character lower-case hex string is treated as a commit
 hash and pins the repository; anything else is probed at the remote as a branch
 first, then a tag.
 
-The $(c_hint --toc) flag disambiguates when an addon directory has multiple matching .toc
-files (rare); interactive runs prompt otherwise.
+The $(c_hint --toc) flag picks a .toc name when an addon directory has multiple matching
+.toc files. The $(c_hint --dir) flag picks the addon directory, relative to the
+repository root, when separate directories provide an addon with the same name.
+Both cases are rare; interactive runs prompt otherwise.
 
 With $(c_hint --file), mash reads one entry per line from a list file (pass $(c_bold -) to read
 from stdin). Blank lines and lines starting with # are ignored. Already-added
@@ -2385,8 +2597,9 @@ repositories are skipped; other failures are reported and the batch continues.
 A summary line at the end tallies added, skipped, and failed.
 
 $(c_bold OPTIONS)
-  $(c_hint --toc) <$(c_dim name)>     select a .toc name when multiple match
-  $(c_hint --file) <$(c_dim file)>    read entries from a file (pass $(c_bold -) for stdin)
+  $(c_hint --toc) <$(c_dim name)>               select a .toc name when multiple match
+  $(c_hint --dir) <$(c_dim addon-directory)>    select an addon directory when names collide
+  $(c_hint --file) <$(c_dim file)>              read entries from a file (pass $(c_bold -) for stdin)
 EOF
       ;;
     pin)
@@ -2443,7 +2656,7 @@ EOF
     refresh)
       cat <<EOF
 $(c_bold USAGE)
-  $(c_hint "mash refresh") <$(c_dim repository)> [$(c_hint --toc) <$(c_dim name)>]
+  $(c_hint "mash refresh") <$(c_dim repository)> [$(c_hint --toc) <$(c_dim name)>] [$(c_hint --dir) <$(c_dim addon-directory)>]
 
 Re-run addon detection against the existing clone and reconcile installed
 symlinks to match. Does not fetch, checkout, or reset; pair with $(c_hint "mash update")
@@ -2452,8 +2665,12 @@ if you also need to advance the Git state.
 The typical use case is the layout drift that $(c_hint "mash update") refuses to handle (a
 .toc was added, removed, renamed, or moved upstream).
 
+Choices recorded by an earlier $(c_hint add) or $(c_hint refresh) are kept while they still apply;
+pass $(c_hint --toc) or $(c_hint --dir) to change one.
+
 $(c_bold OPTIONS)
-  $(c_hint --toc) <$(c_dim name)>    select a .toc name when multiple match
+  $(c_hint --toc) <$(c_dim name)>               select a .toc name when multiple match
+  $(c_hint --dir) <$(c_dim addon-directory)>    select an addon directory when names collide
 EOF
       ;;
     list)

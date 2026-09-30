@@ -61,9 +61,9 @@ mash offers a range of features that simplify managing WoW addons:
 ### Dependencies
 
 - Bash 3.2 or later (chosen for out-of-the-box macOS compatibility; no need to
-  `brew install bash`)
-- Git
-- Standard Unix utilities (present on every system that ships Bash)
+  `brew install bash`).
+- Git.
+- Standard Unix utilities (present on every system that ships Bash).
 
 ### Via Homebrew (recommended)
 
@@ -146,12 +146,14 @@ on other platforms.
 
 The most common repository structures are covered:
 
-- Single `.toc` file in repository root (the simplest case)
+- Single `.toc` file in repository root (the simplest case).
 - Single or multiple `.toc` files in subdirectories (the actual addon is in a
-  subdirectory or the repository contains multiple addons)
+  subdirectory or the repository contains multiple addons).
 - Multiple `.toc` files in the same directory are resolved automatically via
   interface version where possible (e.g., [`shagu/pfQuest`][addon-pfquest]);
-  where not possible, mash prompts for selection
+  where not possible, mash prompts for selection.
+- Multiple separate directories that provide an addon with the same name; mash
+  prompts for the directory to use.
 
 ### Initial setup
 
@@ -227,6 +229,17 @@ where an addon directory contains more than one matching `.toc` file (rare,
 because the interface version filter usually resolves to a single match). When
 this happens during an interactive run, mash prompts for the chosen name; for
 non-interactive runs, pass `--toc <name>` to make the choice explicit.
+
+Similarly, `--dir <addon-directory>` picks the directory when separate
+directories in the repository provide an addon with the same name. Its value is
+the addon's directory relative to the repository root, as the prompt lists it:
+
+```sh
+mash add owner/repository --dir addons/Foo
+```
+
+Each addon name can only be provided by one repository. If another repository
+you added already provides it, mash refuses and names that repository.
 
 #### Batch add from a list file
 
@@ -305,6 +318,7 @@ tells you to run `mash refresh` to re-detect the addons.
 ```sh
 mash refresh shagu/pfQuest
 mash refresh shagu/pfQuest --toc pfQuest-tbc # Pick a .toc when multiple match.
+mash refresh owner/repository --dir addons/Foo # Pick a directory when names collide.
 ```
 
 `mash refresh` re-runs addon detection against the existing clone and
@@ -314,6 +328,9 @@ state.
 
 The typical use case is the layout drift that `mash update` refuses to handle
 (a `.toc` was added, removed, renamed, or moved upstream).
+
+Choices recorded by an earlier `add` or `refresh` are kept while they still
+apply; pass `--toc` or `--dir` to change one.
 
 ### Listing addon repositories
 
@@ -408,9 +425,9 @@ You are welcome to help out!
 
 ## Licenses
 
-- [`AGPL-3.0-or-later`][license-agpl-3.0-or-later] (Code)
-- [`CC-BY-SA-4.0`][license-cc-by-sa-4.0] (Documentation and graphic assets)
-- [`CC0-1.0`][license-cc0-1.0] (Configuration files)
+- [`AGPL-3.0-or-later`][license-agpl-3.0-or-later] (Code).
+- [`CC-BY-SA-4.0`][license-cc-by-sa-4.0] (Documentation and graphic assets).
+- [`CC0-1.0`][license-cc0-1.0] (Configuration files).
 
 This project follows the [REUSE specification][reuse-spec].
 
