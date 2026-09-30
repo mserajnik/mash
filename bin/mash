@@ -1272,18 +1272,39 @@ load_repo_config() {
   : "$url" "$ref" "$ref_kind" "$pinned"
 }
 
-# Returns 0 if `target` is a symlink whose resolved path lives inside the data
-# directory (so it was created by mash and is safe to replace).
+# Echoes where the symlink `target` points, made absolute if relative.
+link_path() {
+  local link
+  link="$(readlink "$1")"
+  if [[ "$link" != /* ]]; then
+    link="$(dirname "$1")/$link"
+  fi
+  printf '%s\n' "$link"
+}
+
+# Returns 0 if `target` is a symlink into `<dir>` (default: the data directory,
+# which marks a link mash created and may replace).
 is_mash_symlink() {
-  local target="$1"
+  local target="$1" dir="${2:-$DATA_DIR}"
   [[ -L "$target" ]] || return 1
   local link
-  link="$(readlink "$target")"
-  # Make absolute if relative.
-  if [[ "$link" != /* ]]; then
-    link="$(dirname "$target")/$link"
-  fi
-  [[ "$link" == "$DATA_DIR"/* ]]
+  link="$(link_path "$target")"
+  [[ "$link" == "$dir" || "$link" == "$dir"/* ]]
+}
+
+# Echoes the repository whose clone the symlink `target` points into, and
+# returns 0, if the configuration records that repository.
+link_owner() {
+  local target="$1" rest name
+  is_mash_symlink "$target" "$(clone_path)" || return 1
+  rest="$(link_path "$target")"
+  rest="${rest#"$(clone_path)"/}"
+  [[ "$rest" == */* ]] || return 1
+  name="${rest%%/*}/"
+  rest="${rest#*/}"
+  name="$name${rest%%/*}"
+  config_section_exists "repo:$name" || return 1
+  printf '%s\n' "$name"
 }
 
 # Echoes the clone directory for `<name>` and returns 0 if the clone is on
@@ -1333,11 +1354,13 @@ read_repo_addons() {
 }
 
 # Echoes an error message ready to pass to `die` on the first target that
-# exists but is not a mash-managed symlink, and returns non-zero. Echoes
-# nothing and returns 0 if every target is either absent or already a
-# mash-managed symlink.
+# exists but is not a mash-managed symlink, or that points into the clone of a
+# recorded repository other than `<self>`, and returns non-zero. Echoes nothing
+# and returns 0 otherwise. On a file system that ignores case, a target can be
+# another repository's link under a name that differs only in case.
 detect_target_conflict() {
-  local target kind
+  local self="$1" target kind other
+  shift
   for target in "$@"; do
     if [[ -e "$target" || -L "$target" ]] && ! is_mash_symlink "$target"; then
       kind="path"
@@ -1345,6 +1368,12 @@ detect_target_conflict() {
       [[ -d "$target" ]] && kind="directory"
       printf 'Target %s already exists (%s) and is not managed by mash.' \
         "$(c_path_display "$target")" "$kind"
+      return 1
+    fi
+    if other="$(link_owner "$target")" && [[ "$other" != "$self" ]]; then
+      printf 'Target %s already points into the clone of %s. To install it from %s, run %s first.' \
+        "$(c_path_display "$target")" "$(c_repo "$other")" "$(c_repo "$self")" \
+        "$(c_hint "mash remove $other")"
       return 1
     fi
   done
@@ -1769,7 +1798,7 @@ cmd_add() {
   if ! conflict="$(detect_owner_conflict "$name" "$resolved")"; then
     die "$conflict"
   fi
-  if ! conflict="$(detect_target_conflict "${chosen_targets[@]}")"; then
+  if ! conflict="$(detect_target_conflict "$name" "${chosen_targets[@]}")"; then
     die "$conflict"
   fi
 
@@ -2341,12 +2370,12 @@ cmd_refresh() {
   done
 
   # Preflight: refuse if another repository provides any of the new addons, or
-  # if any new target path is occupied by a non-mash file.
+  # if any new target path is taken.
   local conflict
   if ! conflict="$(detect_owner_conflict "$name" "$resolved")"; then
     die "$conflict"
   fi
-  if ! conflict="$(detect_target_conflict "${new_targets[@]}")"; then
+  if ! conflict="$(detect_target_conflict "$name" "${new_targets[@]}")"; then
     die "$conflict"
   fi
 
@@ -2360,7 +2389,7 @@ cmd_refresh() {
   local rollback=0 old_target old_source
   for ((i = 0; i < ${#removed_targets[@]}; i++)); do
     old_target="${removed_targets[$i]}"
-    if is_mash_symlink "$old_target"; then
+    if is_mash_symlink "$old_target" "$clone_dir"; then
       old_source="$(readlink "$old_target")"
       if rm -f "$old_target"; then
         removed_done+=("$old_target")
@@ -2516,19 +2545,20 @@ cmd_remove() {
   client_dir="$(config_get_required main client_dir)"
   local addons_dir="$client_dir/Interface/AddOns"
 
-  # Remove each managed symlink.
+  local clone_dir
+  clone_dir="$(clone_path "$name")"
+
+  # Remove each symlink into this repository's clone.
   local addon_name addon_reldir target
   while IFS=$'\t' read -r addon_name addon_reldir; do
     [[ -z "$addon_name" ]] && continue
     target="$addons_dir/$addon_name"
-    if is_mash_symlink "$target"; then
+    if is_mash_symlink "$target" "$clone_dir"; then
       rm -f "$target"
     fi
   done < <(read_repo_addons "$section")
 
   # Remove the clone.
-  local clone_dir
-  clone_dir="$(clone_path "$name")"
   rm -rf "$clone_dir"
 
   # Clean up empty owner directory; harmless if siblings remain.
