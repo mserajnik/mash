@@ -226,9 +226,10 @@ clone_path() {
 # names starting with `.` (would let the path-based wipes in `cmd_drop` resolve
 # outside the intended profile directory) or `-` (would be intercepted as an
 # unknown flag by the dispatcher's global flag pass), names containing slashes
-# or whitespace, the reserved name `active` (which collides with the state
-# file), and any of the subcommand names (so a profile cannot shadow a command
-# in user-facing documentation). Dies with a descriptive message on failure.
+# or whitespace, the reserved name `active` in any case (which collides with
+# the state file), and any of the subcommand names (so a profile cannot shadow
+# a command in user-facing documentation). Dies with a descriptive message on
+# failure.
 validate_profile_name() {
   local name="$1"
   if [[ -z "$name" ]]; then
@@ -244,8 +245,10 @@ validate_profile_name() {
   if [[ "$name" == *[/[:space:]]* ]]; then
     die "Profile name $(c_bold "$name") must not contain slashes or whitespace."
   fi
-  if [[ "$name" == "active" ]]; then
-    die "Profile name $(c_bold "active") is reserved."
+  # Compared in any case: on a file system that ignores case, the state file
+  # would take the place of the profile directory.
+  if [[ "$(to_lower "$name")" == "active" ]]; then
+    die "Profile name $(c_bold "$name") is reserved."
   fi
   # Keep the pattern list in sync with the help case and the dispatch case in
   # `parse_global_flags_and_dispatch`.
