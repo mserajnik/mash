@@ -62,7 +62,7 @@ mash offers a range of features that simplify managing WoW addons:
 
 - Bash 3.2 or later (chosen for out-of-the-box macOS compatibility; no need to
   `brew install bash`).
-- Git.
+- Git 2.17 or later.
 - Standard Unix utilities (present on every system that ships Bash).
 
 ### Via Homebrew (recommended)

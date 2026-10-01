@@ -1231,15 +1231,17 @@ git_short_head() {
 }
 
 # Fetches the origin remote for a clone. Adds `--tags` when the ref kind is
-# `tag` (branch refs do not need it). Honors `$VERBOSE` by suppressing Git's
+# `tag` (branch refs do not need it), with `--force` so a tag moved upstream
+# moves here too. `--prune` drops branches, and with tags `--prune-tags` drops
+# tags, that no longer exist upstream. Honors `$VERBOSE` by suppressing Git's
 # progress output unless verbose mode is on.
 fetch_origin() {
   local clone_dir="$1"
   local ref_kind="$2"
-  local args=()
-  [[ "$ref_kind" == "tag" ]] && args+=(--tags)
+  local args=(--prune)
+  [[ "$ref_kind" == "tag" ]] && args+=(--tags --force --prune-tags)
   [[ "$VERBOSE" -ne 1 ]] && args+=(--quiet)
-  git_in "$clone_dir" fetch "${args[@]+"${args[@]}"}" origin
+  git_in "$clone_dir" fetch "${args[@]}" origin
 }
 
 # Echoes the qualified Git ref for the given `ref` + `ref_kind`:
