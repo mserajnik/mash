@@ -113,7 +113,10 @@ mash_mktemp() {
   else
     f="$(mktemp 2>/dev/null)" || die "Cannot create a temporary file."
   fi
-  printf '%s\n' "$f" >>"$TMP_TRACKER"
+  printf '%s\n' "$f" >>"$TMP_TRACKER" || {
+    rm -f "$f"
+    die "Cannot write to $(c_path_display "$TMP_TRACKER")."
+  }
   printf '%s\n' "$f"
 }
 
@@ -903,7 +906,8 @@ scan_addons() {
     if [[ "$iface" == "$want_version" ]]; then
       reldir="$(dirname -- "${toc_path#"$clone_dir"/}")"
       base="$(basename "$toc_path" .toc)"
-      printf '%s\t%s\n' "$reldir" "$base" >>"$tocs_file"
+      printf '%s\t%s\n' "$reldir" "$base" >>"$tocs_file" ||
+        die "Cannot write to $(c_path_display "$tocs_file")."
     fi
   done < <(find "$clone_dir" -type f -name '*.toc' ! -path '*/.git/*' -print0)
 
@@ -929,7 +933,8 @@ scan_addons() {
       n = ($1 == "." ? 0 : split($1, parts, "/"))
       printf "%d\t%s\t%s\n", n, $1, $2
     }
-  ' | LC_ALL=C sort -t $'\t' -k1,1n -k2,2f >"$groups_file"
+  ' | LC_ALL=C sort -t $'\t' -k1,1n -k2,2f >"$groups_file" ||
+    die "Cannot write to $(c_path_display "$groups_file")."
 
   local kept_file
   kept_file="$(mash_mktemp)" || return 1
@@ -950,7 +955,8 @@ scan_addons() {
       done <"$kept_file"
     fi
     if [[ "$ancestor_match" -eq 0 ]]; then
-      printf '%s\t%s\n' "$dir" "$tocs" >>"$kept_file"
+      printf '%s\t%s\n' "$dir" "$tocs" >>"$kept_file" ||
+        die "Cannot write to $(c_path_display "$kept_file")."
     fi
   done <"$groups_file"
 
