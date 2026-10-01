@@ -1403,8 +1403,8 @@ detect_target_conflict() {
   for target in "$@"; do
     if [[ -e "$target" || -L "$target" ]] && ! is_mash_symlink "$target"; then
       kind="path"
-      [[ -L "$target" ]] && kind="symlink"
       [[ -d "$target" ]] && kind="directory"
+      [[ -L "$target" ]] && kind="symlink"
       printf 'Target %s already exists (%s) and is not managed by mash.' \
         "$(c_path_display "$target")" "$kind"
       return 1
