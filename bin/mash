@@ -2169,7 +2169,14 @@ cmd_pin() {
   local new_sha
   new_sha="$(git_short_head "$clone_dir")"
 
-  if [[ "$pinned" == "true" && "$ref" == "$new_sha" ]]; then
+  # Compare full hashes: the recorded hash may be longer or shorter than the
+  # one `git_short_head` prints, and a short one may have become ambiguous.
+  local head_sha recorded_sha=""
+  head_sha="$(git_in "$clone_dir" rev-parse HEAD)"
+  if is_sha "$ref"; then
+    recorded_sha="$(git_in "$clone_dir" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null || true)"
+  fi
+  if [[ "$pinned" == "true" && "$recorded_sha" == "$head_sha" ]]; then
     log_info "$(c_repo "$name") is already pinned to $(c_dim "$new_sha")."
     return 0
   fi
