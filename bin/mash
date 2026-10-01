@@ -1243,12 +1243,13 @@ resolve_checkout_ref() {
 # Echoes the short commit hash at the target ref for a clone (`origin/<branch>`
 # or `refs/tags/<tag>`). Assumes a prior `fetch_origin`. Returns non-zero with
 # no output if the ref is not resolvable (e.g., upstream branch deleted).
+# `^{commit}` resolves an annotated tag to its commit.
 resolve_target_sha() {
   local clone_dir="$1"
   local ref="$2"
   local ref_kind="$3"
   git_in "$clone_dir" rev-parse --short=7 \
-    "$(resolve_checkout_ref "$ref" "$ref_kind")" 2>/dev/null
+    "$(resolve_checkout_ref "$ref" "$ref_kind")^{commit}" 2>/dev/null
 }
 
 # Reads the four canonical keys (`url`, `ref`, `ref_kind`, `pinned`) for a
