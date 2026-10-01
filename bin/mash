@@ -1617,6 +1617,9 @@ cmd_init() {
   validate_profile_name "$profile"
 
   if [[ -f "$(profile_config_path "$profile")" ]]; then
+    if [[ "$(read_active_profile 2>/dev/null || true)" == "$profile" ]]; then
+      die "Profile $(c_bold "$profile") already exists and is active. To re-create it, switch to another profile ($(c_hint "mash use <name>"), or create one with $(c_hint "mash init <client-directory> --profile <name>")), then run $(c_hint "mash drop $profile")."
+    fi
     die "Profile $(c_bold "$profile") already exists. Run $(c_hint "mash drop $profile") first to re-create it."
   fi
 
