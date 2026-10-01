@@ -1465,6 +1465,81 @@ detect_shared_target() {
   return 0
 }
 
+# Prints a `<name>\t<link>` line for each `<name>`, with the text of the
+# symlink `<addons-dir>/<name>`, or nothing after the tab when there is none.
+snapshot_links() {
+  local addons_dir="$1" name link
+  shift
+  for name in "$@"; do
+    link=""
+    if [[ -L "$addons_dir/$name" ]]; then
+      link="$(readlink "$addons_dir/$name")" || link=""
+    fi
+    printf '%s\t%s\n' "$name" "$link"
+  done
+}
+
+# Puts the symlinks in `<addons-dir>` back as `snapshot_links` saved them in
+# `<snapshot>`, after a failed `add` or `refresh`. The names that follow are
+# the recorded ones: they are restored first, and the others only where the
+# path is free, since on a file system that treats two names as one the other
+# name is the same entry, and writing it can rename the entry. Keeps going past
+# a failing step, then echoes the names whose links still differ from the
+# snapshot, sorted with `sort_names`.
+restore_links() {
+  local addons_dir="$1" snapshot="$2" name link path
+  shift 2
+  # Remove the links that did not exist before, and the other names' changed
+  # ones; `ln -sfn` below replaces the recorded names' links.
+  while IFS=$'\t' read -r name link; do
+    path="$addons_dir/$name"
+    [[ -n "$name" && -L "$path" ]] || continue
+    if [[ -z "$link" ]] ||
+      { ! list_contains "$name" "$@" && [[ "$(readlink "$path")" != "$link" ]]; }; then
+      rm -f "$path" || true
+    fi
+  done <<<"$snapshot"
+  while IFS=$'\t' read -r name link; do
+    path="$addons_dir/$name"
+    [[ -n "$link" ]] || continue
+    list_contains "$name" "$@" || continue
+    [[ -L "$path" && "$(readlink "$path")" == "$link" ]] && continue
+    ln -sfn "$link" "$path" || true
+  done <<<"$snapshot"
+  while IFS=$'\t' read -r name link; do
+    path="$addons_dir/$name"
+    [[ -n "$link" ]] || continue
+    if list_contains "$name" "$@"; then
+      continue
+    fi
+    [[ ! -e "$path" && ! -L "$path" ]] || continue
+    ln -sfn "$link" "$path" || true
+  done <<<"$snapshot"
+  while IFS=$'\t' read -r name link; do
+    path="$addons_dir/$name"
+    [[ -n "$name" ]] || continue
+    if [[ -z "$link" ]]; then
+      [[ -L "$path" ]] || continue
+    elif [[ -L "$path" && "$(readlink "$path")" == "$link" ]]; then
+      continue
+    fi
+    printf '%s\n' "$name"
+  done <<<"$snapshot" | sort_names
+}
+
+# Dies after a failed `add` or `refresh` whose links `restore_links` put back,
+# with `<message>`. When some links in `<addons-dir>` could not be put back
+# (`<unrestored>`, one name per line), names them and asks to run the command
+# again.
+die_rolled_back() {
+  local addons_dir="$1" message="$2" unrestored="$3" names=() name
+  [[ -n "$unrestored" ]] || die "$message (rolled back)."
+  while IFS= read -r name; do
+    [[ -z "$name" ]] || names+=("$name")
+  done <<<"$unrestored"
+  die "$message (could not restore $(fmt_list c_addon "${names[@]}") in $(c_path_display "$addons_dir"); run the command again)."
+}
+
 # Prompts the user for the client's TOC interface version
 # (Vanilla/TBC/WotLK/custom) and echoes the chosen integer.
 prompt_interface_version() {
@@ -1844,13 +1919,12 @@ cmd_add() {
   done
 
   # Install symlinks, then record them in the configuration. If any step fails,
-  # roll back the symlinks installed here; the `EXIT` trap then removes the
-  # clone so the next attempt starts from a clean slate.
-  local installed=() installed_lines=""
-  local failed=0 shared=""
+  # put the links back as they were; the `EXIT` trap then removes the clone so
+  # the next attempt starts from a clean slate.
+  local before installed_lines="" failed=0 shared=""
+  before="$(snapshot_links "$addons_dir" "${chosen_tocs[@]}")"
   for ((i = 0; i < ${#chosen_targets[@]}; i++)); do
     if install_symlink_safe "${chosen_sources[$i]}" "${chosen_targets[$i]}"; then
-      installed+=("${chosen_targets[$i]}")
       installed_lines+="${chosen_tocs[$i]}"$'\t'"${chosen_sources[$i]}"$'\n'
     else
       failed=1
@@ -1869,12 +1943,8 @@ cmd_add() {
     failed=1
   fi
   if [[ "$failed" -eq 1 ]]; then
-    local rb
-    for rb in ${installed[@]+"${installed[@]}"}; do
-      rm -f "$rb"
-    done
-    [[ -z "$shared" ]] || die "$shared (rolled back)."
-    die "Failed to install $(c_repo "$name") (rolled back)."
+    [[ -n "$shared" ]] || shared="Failed to install $(c_repo "$name")"
+    die_rolled_back "$addons_dir" "$shared" "$(restore_links "$addons_dir" "$before")"
   fi
 
   # The configuration now records the clone, so clear the trap's rollback hook:
@@ -2386,7 +2456,7 @@ cmd_refresh() {
   done <<<"$resolved"
 
   # Removed addons: in the old set, not in the new set.
-  local removed_targets=()
+  local removed_tocs=()
   local i j found
   for ((i = 0; i < ${#old_tocs[@]}; i++)); do
     found=0
@@ -2397,7 +2467,7 @@ cmd_refresh() {
       fi
     done
     if [[ "$found" -eq 0 ]]; then
-      removed_targets+=("$addons_dir/${old_tocs[$i]}")
+      removed_tocs+=("${old_tocs[$i]}")
     fi
   done
 
@@ -2411,45 +2481,19 @@ cmd_refresh() {
     die "$conflict"
   fi
 
-  # Apply changes. Track removed/repointed/installed for rollback on mid-step
-  # failure. `repointed_*` captures the pre-overwrite source of any existing
-  # mash-managed symlink we are about to overwrite (same name, different
-  # relative directory) so we can restore it if a later install fails.
-  local removed_done=() removed_done_sources=()
-  local repointed_targets=() repointed_sources=()
-  local installed_done=()
-  local rollback=0 old_target old_source
-  for ((i = 0; i < ${#removed_targets[@]}; i++)); do
-    old_target="${removed_targets[$i]}"
-    if is_mash_symlink "$old_target" "$clone_dir"; then
-      old_source="$(readlink "$old_target")"
-      if rm -f "$old_target"; then
-        removed_done+=("$old_target")
-        removed_done_sources+=("$old_source")
-      else
-        rollback=1
-        break
-      fi
+  # Apply changes. If a step fails, put the links back as they were.
+  local before name_removed old_target installed_lines="" rollback=0 shared=""
+  before="$(snapshot_links "$addons_dir" ${new_tocs[@]+"${new_tocs[@]}"} ${removed_tocs[@]+"${removed_tocs[@]}"})"
+  for name_removed in ${removed_tocs[@]+"${removed_tocs[@]}"}; do
+    old_target="$addons_dir/$name_removed"
+    if is_mash_symlink "$old_target" "$clone_dir" && ! rm -f "$old_target"; then
+      rollback=1
+      break
     fi
   done
-
-  local installed_lines="" shared=""
   if [[ "$rollback" -eq 0 ]]; then
-    # Preflight guaranteed any existing symlink here is mash-managed, so a bare
-    # `-L` check is enough to detect a repoint we may need to roll back. Record
-    # them all before installing any, so a target the file system shares with
-    # an earlier one is restored to its old source.
     for ((i = 0; i < ${#new_targets[@]}; i++)); do
-      target="${new_targets[$i]}"
-      if [[ -L "$target" ]]; then
-        repointed_targets+=("$target")
-        repointed_sources+=("$(readlink "$target")")
-      fi
-    done
-    for ((i = 0; i < ${#new_targets[@]}; i++)); do
-      target="${new_targets[$i]}"
-      if install_symlink_safe "${new_sources[$i]}" "$target"; then
-        installed_done+=("$target")
+      if install_symlink_safe "${new_sources[$i]}" "${new_targets[$i]}"; then
         installed_lines+="${new_tocs[$i]}"$'\t'"${new_sources[$i]}"$'\n'
       else
         rollback=1
@@ -2481,36 +2525,16 @@ cmd_refresh() {
   fi
 
   if [[ "$rollback" -eq 1 ]]; then
-    local rb
-    for rb in ${installed_done[@]+"${installed_done[@]}"}; do
-      rm -f "$rb"
-    done
-    # Restore the recorded names first, then any other link only where the path
-    # is still free: on a file system that treats two names as one, the other
-    # name is the same entry, and writing it can rename the entry.
-    for ((i = 0; i < ${#repointed_targets[@]}; i++)); do
-      if list_contains "$(basename -- "${repointed_targets[$i]}")" ${old_tocs[@]+"${old_tocs[@]}"}; then
-        ln -sfn "${repointed_sources[$i]}" "${repointed_targets[$i]}"
-      fi
-    done
-    for ((i = 0; i < ${#removed_done[@]}; i++)); do
-      ln -sfn "${removed_done_sources[$i]}" "${removed_done[$i]}"
-    done
-    for ((i = 0; i < ${#repointed_targets[@]}; i++)); do
-      target="${repointed_targets[$i]}"
-      if [[ ! -e "$target" && ! -L "$target" ]]; then
-        ln -sfn "${repointed_sources[$i]}" "$target"
-      fi
-    done
-    [[ -z "$shared" ]] || die "$shared (rolled back)."
-    die "Failed to refresh $(c_repo "$name") (rolled back)."
+    [[ -n "$shared" ]] || shared="Failed to refresh $(c_repo "$name")"
+    die_rolled_back "$addons_dir" "$shared" \
+      "$(restore_links "$addons_dir" "$before" ${old_tocs[@]+"${old_tocs[@]}"})"
   fi
 
   # Detect whether the symlink set actually changed; the "no changes" carve-out
   # is useful when the user ran `refresh` defensively, or when only
   # non-membership `.toc` fields (Notes, Title, etc.) shifted.
   local changed=0
-  if [[ ${#removed_done[@]} -gt 0 ]] || [[ ${#new_tocs[@]} -ne ${#old_tocs[@]} ]]; then
+  if [[ ${#new_tocs[@]} -ne ${#old_tocs[@]} ]]; then
     changed=1
   else
     for ((i = 0; i < ${#new_tocs[@]}; i++)); do
