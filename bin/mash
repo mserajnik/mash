@@ -1276,10 +1276,12 @@ resolve_target_sha() {
 load_repo_config() {
   local repo_name="$1"
   local section="repo:$repo_name"
-  url="$(config_get_required "$section" url)"
-  ref="$(config_get_required "$section" ref)"
-  ref_kind="$(config_get_required "$section" ref_kind)"
-  pinned="$(config_get_required "$section" pinned)"
+  # `|| exit 1` because `status` and `update` call this where Bash ignores
+  # `set -e`, which would let a missing key carry on as an empty value.
+  url="$(config_get_required "$section" url)" || exit 1
+  ref="$(config_get_required "$section" ref)" || exit 1
+  ref_kind="$(config_get_required "$section" ref_kind)" || exit 1
+  pinned="$(config_get_required "$section" pinned)" || exit 1
   # Pseudo-read so shellcheck treats the writes via dynamic scoping as "used".
   # The function's actual contract is to populate the caller's locals via
   # Bash's dynamic scoping; this line costs nothing at runtime and removes
@@ -2312,7 +2314,7 @@ cmd_status() {
   done <<<"$repos"
 
   if [[ "$n_total" -gt 1 ]]; then
-    log_info "$n_up up to date, $n_updates with updates available, $n_skipped skipped."
+    log_info "$n_up up to date, $n_updates with updates available, $n_skipped skipped, $n_failed failed."
   fi
 
   if [[ "$n_failed" -gt 0 ]]; then
@@ -2847,8 +2849,8 @@ upstream, without touching the working state. Pinned repositories are skipped
 with a message; missing clones emit a warning.
 
 With no <$(c_dim repository)>, checks every tracked repository and emits a summary line
-tallying how many are up to date, how many have updates available, and how many
-were skipped. Apply available updates with $(c_hint "mash update").
+tallying how many are up to date, how many have updates available, how many
+were skipped, and how many failed. Apply available updates with $(c_hint "mash update").
 EOF
       ;;
     update)
