@@ -1294,18 +1294,40 @@ link_path() {
 is_mash_symlink() {
   local target="$1" dir="${2:-$DATA_DIR}"
   [[ -L "$target" ]] || return 1
-  local link
-  link="$(link_path "$target")"
-  [[ "$link" == "$dir" || "$link" == "$dir"/* ]]
+  path_below "$(link_path "$target")" "$dir" >/dev/null
+}
+
+# Echoes the part of `<path>` below the directory `<dir>`, empty for `<dir>`
+# itself, and returns non-zero when `<path>` is not in `<dir>`. On a file
+# system that ignores case, `<path>` may spell `<dir>` in another case (a link
+# created while the profile was named in another case), so when the text
+# differs, the leading directories of `<path>` are compared with `<dir>` on
+# disk.
+path_below() {
+  local path="$1" dir="$2"
+  if [[ "$path" == "$dir" || "$path" == "$dir"/* ]]; then
+    path="${path#"$dir"}"
+    printf '%s\n' "${path#/}"
+    return 0
+  fi
+  local d="$dir" rest="$path" prefix=""
+  while [[ "$d" == /?* && "$rest" == /?* ]]; do
+    d="${d#"${d%%[!/]*}"}"
+    rest="${rest#"${rest%%[!/]*}"}"
+    prefix="$prefix/${rest%%/*}"
+    if [[ "$d" == */* ]]; then d="/${d#*/}"; else d=""; fi
+    if [[ "$rest" == */* ]]; then rest="/${rest#*/}"; else rest=""; fi
+  done
+  [[ -z "$d" && -n "$prefix" && "$prefix" -ef "$dir" ]] || return 1
+  printf '%s\n' "${rest#/}"
 }
 
 # Echoes the repository whose clone the symlink `target` points into, and
 # returns 0, if the configuration records that repository.
 link_owner() {
   local target="$1" rest name
-  is_mash_symlink "$target" "$(clone_path)" || return 1
-  rest="$(link_path "$target")"
-  rest="${rest#"$(clone_path)"/}"
+  [[ -L "$target" ]] || return 1
+  rest="$(path_below "$(link_path "$target")" "$(clone_path)")" || return 1
   [[ "$rest" == */* ]] || return 1
   name="${rest%%/*}/"
   rest="${rest#*/}"
@@ -1739,7 +1761,7 @@ cmd_profile() {
   local name
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    if [[ "$name" == "$active" ]]; then
+    if is_same_profile "$name" "$active"; then
       log_info "* $(c_bold "$name")"
     else
       log_info "  $name"
@@ -2641,12 +2663,16 @@ cmd_remove() {
   local clone_dir
   clone_dir="$(clone_path "$name")"
 
-  # Remove each symlink into this repository's clone.
-  local addon_name addon_reldir target
+  # Remove each symlink into this repository's clone. Links are also matched
+  # below the data directory, which still exists after the clone was deleted by
+  # hand, for a link that spells the profile in another case.
+  local addon_name addon_reldir target rest
   while IFS=$'\t' read -r addon_name addon_reldir; do
     [[ -z "$addon_name" ]] && continue
     target="$addons_dir/$addon_name"
-    if is_mash_symlink "$target" "$clone_dir"; then
+    if is_mash_symlink "$target" "$clone_dir" ||
+      { [[ -L "$target" ]] && rest="$(path_below "$(link_path "$target")" "$DATA_DIR")" &&
+        [[ "$rest" == "clones/$name" || "$rest" == "clones/$name/"* ]]; }; then
       rm -f "$target"
     fi
   done < <(read_repo_addons "$section")
