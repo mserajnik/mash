@@ -284,6 +284,13 @@ write_active_profile() {
   }
 }
 
+# Returns 0 if the profiles `<a>` and `<b>` are the same directory, which on a
+# file system that ignores case includes names that differ only in case.
+is_same_profile() {
+  [[ -n "$1" && -n "$2" ]] || return 1
+  [[ "$1" == "$2" || "$(config_root)/$1" -ef "$(config_root)/$2" ]]
+}
+
 # Lists the names of every profile under `config_root` that contains a
 # `config.ini`, one per line, sorted. Stray non-directory entries (notably the
 # `active` state file) and directories missing `config.ini` are skipped.
@@ -1617,7 +1624,7 @@ cmd_init() {
   validate_profile_name "$profile"
 
   if [[ -f "$(profile_config_path "$profile")" ]]; then
-    if [[ "$(read_active_profile 2>/dev/null || true)" == "$profile" ]]; then
+    if is_same_profile "$profile" "$(read_active_profile 2>/dev/null || true)"; then
       die "Profile $(c_bold "$profile") already exists and is active. To re-create it, switch to another profile ($(c_hint "mash use <name>"), or create one with $(c_hint "mash init <client-directory> --profile <name>")), then run $(c_hint "mash drop $profile")."
     fi
     die "Profile $(c_bold "$profile") already exists. Run $(c_hint "mash drop $profile") first to re-create it."
@@ -1693,7 +1700,7 @@ cmd_drop() {
   fi
   local active
   active="$(read_active_profile 2>/dev/null || true)"
-  if [[ "$active" == "$name" ]]; then
+  if is_same_profile "$name" "$active"; then
     die "Profile $(c_bold "$name") is active. Run $(c_hint "mash use <other>") first."
   fi
   local profile_count
