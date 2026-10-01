@@ -2520,12 +2520,16 @@ cmd_refresh() {
 
   # Apply changes. If a step fails, put the links back as they were.
   local before name_removed old_target installed_lines="" rollback=0 shared=""
+  local removed_links=()
   before="$(snapshot_links "$addons_dir" ${new_tocs[@]+"${new_tocs[@]}"} ${removed_tocs[@]+"${removed_tocs[@]}"})"
   for name_removed in ${removed_tocs[@]+"${removed_tocs[@]}"}; do
     old_target="$addons_dir/$name_removed"
-    if is_mash_symlink "$old_target" "$clone_dir" && ! rm -f "$old_target"; then
-      rollback=1
-      break
+    if is_mash_symlink "$old_target" "$clone_dir"; then
+      if ! rm -f "$old_target"; then
+        rollback=1
+        break
+      fi
+      removed_links+=("$name_removed")
     fi
   done
   if [[ "$rollback" -eq 0 ]]; then
@@ -2589,12 +2593,25 @@ cmd_refresh() {
     done
   fi
 
+  # A link that had to be put back is a change too.
+  if [[ "$changed" -eq 0 ]]; then
+    for ((i = 0; i < ${#new_tocs[@]}; i++)); do
+      if ! grep -qxF -- "${new_tocs[$i]}"$'\t'"${new_sources[$i]}" <<<"$before"; then
+        changed=1
+        break
+      fi
+    done
+  fi
+
   if [[ "$changed" -eq 0 ]]; then
     log_info "$(c_status Refreshed) $(c_repo "$name") (no changes)."
   else
     log_info "$(c_status Refreshed) $(c_repo "$name")."
     for ((i = 0; i < ${#new_targets[@]}; i++)); do
       log_info "  $(c_addon "${new_tocs[$i]}") -> $(c_path_display "${new_sources[$i]}")"
+    done
+    for name_removed in ${removed_links[@]+"${removed_links[@]}"}; do
+      log_info "  $(c_addon "$name_removed") (removed)"
     done
   fi
 }
