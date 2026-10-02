@@ -177,6 +177,47 @@ c_path_display() {
   c_path "$(tilde_path "$1")"
 }
 
+# Dies with the standard "requires a value" message when an option lacks its
+# value. Used by command parsers handling the `--flag <value>` form (the
+# `--flag=value` form is parsed inline).
+require_arg() {
+  [[ "$2" -ge 2 ]] || die "$(c_hint "$1") requires a value."
+}
+
+# Lowercases a string via `tr` (Bash 3.2 lacks `${var,,}`).
+to_lower() {
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+
+# Sorts lines case-insensitively, independent of the locale. Lines that differ
+# only in case fall back to byte order, so the result is deterministic. Every
+# list mash prints (profiles, repositories, addons) goes through this.
+sort_names() {
+  LC_ALL=C sort -f "$@"
+}
+
+# Returns 0 if the first argument equals any of the remaining arguments.
+list_contains() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# Echoes the arguments after the first joined with `, `, each rendered through
+# the function named by the first argument (for example, `c_addon`).
+fmt_list() {
+  local render="$1" out="" item
+  shift
+  for item in "$@"; do
+    [[ -n "$out" ]] && out="$out, "
+    out="$out$("$render" "$item")"
+  done
+  printf '%s\n' "$out"
+}
+
 # `CONFIG_PATH` and `DATA_DIR` are scoped to the active profile and resolved at
 # dispatch time by `resolve_active_paths`. Commands that operate on the active
 # profile (`add`, `pin`, `unpin`, `status`, `update`, `refresh`, `list`,
@@ -746,50 +787,9 @@ ensure_writable() {
   rm -f "$probe"
 }
 
-# Dies with the standard "requires a value" message when an option lacks its
-# value. Used by command parsers handling the `--flag <value>` form (the
-# `--flag=value` form is parsed inline).
-require_arg() {
-  [[ "$2" -ge 2 ]] || die "$(c_hint "$1") requires a value."
-}
-
 # Matches the canonical lowercase form used elsewhere; accepts uppercase input.
 is_sha() {
   [[ "$1" =~ ^[0-9a-fA-F]{7,40}$ ]]
-}
-
-# Lowercases a string via `tr` (Bash 3.2 lacks `${var,,}`).
-to_lower() {
-  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
-}
-
-# Sorts lines case-insensitively, independent of the locale. Lines that differ
-# only in case fall back to byte order, so the result is deterministic. Every
-# list mash prints (profiles, repositories, addons) goes through this.
-sort_names() {
-  LC_ALL=C sort -f "$@"
-}
-
-# Returns 0 if the first argument equals any of the remaining arguments.
-list_contains() {
-  local needle="$1" item
-  shift
-  for item in "$@"; do
-    [[ "$item" == "$needle" ]] && return 0
-  done
-  return 1
-}
-
-# Echoes the arguments after the first joined with `, `, each rendered through
-# the function named by the first argument (for example, `c_addon`).
-fmt_list() {
-  local render="$1" out="" item
-  shift
-  for item in "$@"; do
-    [[ -n "$out" ]] && out="$out, "
-    out="$out$("$render" "$item")"
-  done
-  printf '%s\n' "$out"
 }
 
 # Defaults to `--quiet`; on `-v` streams progress via `--progress`.
