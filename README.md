@@ -6,8 +6,6 @@
 
 [![Lint status][badge-lint-status]][badge-lint-status-url]
 
-> A Git-based CLI addon manager for old WoW clients
-
 mash (`m`anage `a`ddons via Ba`sh`) is a CLI addon manager targeting older WoW
 clients where addons are primarily distributed via Git repositories. Existing
 addon managers are either cumbersome to install on some systems (a
